@@ -1,0 +1,48 @@
+# VS Code workspace/user settings
+.vscode/
+**/.vscode/
+
+# Build directories
+build/
+**/build/
+build-*/
+**/build-*/
+cmake-build-*/
+**/cmake-build-*/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+CTestTestfile.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+
+# Ninja generated files
+build.ninja
+.ninja_deps
+.ninja_log
+
+# Compiled binaries and intermediate files
+*.exe
+*.dll
+*.lib
+*.a
+*.o
+*.pdb
+*.ilk
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# OS metadata
+Thumbs.db
+desktop.ini
+.DS_Store
