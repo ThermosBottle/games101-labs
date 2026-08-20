@@ -275,11 +275,11 @@ void rst::rasterizer::rasterize_triangle(const Triangle &t, const std::array<Eig
     {
         for (int y = std::floor(std::min({v[0].y(), v[1].y(), v[2].y()})); y <= std::ceil(std::max({v[0].y(), v[1].y(), v[2].y()})); ++y)
         {
-            int covered_count = 0;
             for (int sample_i = 0; sample_i < N; ++sample_i)
             {
                 float x_sample = x + MSAA_OFFSET[sample_i][0];
                 float y_sample = y + MSAA_OFFSET[sample_i][1];
+                int sample_index = get_sample_index(x, y, sample_i);
 
                 if (insideTriangle(x_sample, y_sample, t.v))
                 {
@@ -289,18 +289,20 @@ void rst::rasterizer::rasterize_triangle(const Triangle &t, const std::array<Eig
                     z_interpolated *= w_reciprocal;
 
                     // TODO : set the current pixel (use the set_pixel function) to the color of the triangle (use getColor function) if it should be painted.
-                    if (z_interpolated < sample_depth_buf[get_sample_index(x, y, sample_i)])
+                    if (z_interpolated < sample_depth_buf[sample_index])
                     {
-                        sample_depth_buf[get_sample_index(x, y, sample_i)] = z_interpolated;
-                        covered_count++;
+                        sample_depth_buf[sample_index] = z_interpolated;
+                        sample_color_buf[sample_index] = t.color[0] * 255.0f;
                     }
                 }
             }
 
-            if (covered_count > 0)
+            Eigen::Vector3f resolved_color = Eigen::Vector3f::Zero();
+            for (int sample_i = 0; sample_i < N; ++sample_i)
             {
-                set_pixel(x, y, t.getColor(), static_cast<float>(covered_count) / N);
+                resolved_color += sample_color_buf[get_sample_index(x, y, sample_i)];
             }
+            frame_buf[get_index(x, y)] = resolved_color / static_cast<float>(N);
         }
     }
 
@@ -336,10 +338,12 @@ void rst::rasterizer::clear(rst::Buffers buff)
     if ((buff & rst::Buffers::Color) == rst::Buffers::Color)
     {
         std::fill(frame_buf.begin(), frame_buf.end(), Eigen::Vector3f{0, 0, 0});
+        std::fill(sample_color_buf.begin(), sample_color_buf.end(), Eigen::Vector3f{0, 0, 0});
     }
     if ((buff & rst::Buffers::Depth) == rst::Buffers::Depth)
     {
         std::fill(depth_buf.begin(), depth_buf.end(), std::numeric_limits<float>::infinity());
+        std::fill(sample_depth_buf.begin(), sample_depth_buf.end(), std::numeric_limits<float>::infinity());
     }
 }
 
@@ -347,6 +351,8 @@ rst::rasterizer::rasterizer(int w, int h) : width(w), height(h)
 {
     frame_buf.resize(w * h);
     depth_buf.resize(w * h);
+    sample_color_buf.resize(w * h * 4, Eigen::Vector3f{0, 0, 0});
+    sample_depth_buf.resize(w * h * 4, std::numeric_limits<float>::infinity());
 
     texture = std::nullopt;
 }
@@ -361,6 +367,11 @@ void rst::rasterizer::set_pixel(const Vector2i &point, const Eigen::Vector3f &co
     // old index: auto ind = point.y() + point.x() * width;
     int ind = (height - point.y()) * width + point.x();
     frame_buf[ind] = color;
+}
+
+int rst::rasterizer::get_sample_index(int sample_x, int sample_y, int sample_i)
+{
+    return ((height - 1 - sample_y) * width + sample_x) * 4 + sample_i;
 }
 
 void rst::rasterizer::set_vertex_shader(std::function<Eigen::Vector3f(vertex_shader_payload)> vert_shader)

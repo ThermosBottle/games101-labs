@@ -39,7 +39,7 @@ auto to_vec4(const Eigen::Vector3f& v3, float w = 1.0f)
     return Vector4f(v3.x(), v3.y(), v3.z(), w);
 }
 
-const float rst::rasterizer::MSAA_OFFSET[4][2] = {
+const float rst::rasterizer::SSAA_OFFSET[4][2] = {
     { 0.375, 0.125 },
     { 0.875, 0.375 },
     { 0.125, 0.625 },
@@ -115,16 +115,16 @@ void rst::rasterizer::draw(pos_buf_id pos_buffer, ind_buf_id ind_buffer, col_buf
 //Screen space rasterization
 void rst::rasterizer::rasterize_triangle(const Triangle& t) {
     auto v = t.toVector4();
-    int N = 4; // MSAA 4x
+    int N = 4; // SSAA 4x
 
     // TODO : Find out the bounding box of current triangle.
     // iterate through the pixel and find if the current pixel is inside the triangle
     for (int x = std::floor(std::min({v[0].x(), v[1].x(), v[2].x()})); x <= std::ceil(std::max({v[0].x(), v[1].x(), v[2].x()})); ++x) {
         for (int y = std::floor(std::min({v[0].y(), v[1].y(), v[2].y()})); y <= std::ceil(std::max({v[0].y(), v[1].y(), v[2].y()})); ++y) {
-            int covered_count = 0;
             for (int sample_i = 0; sample_i < N; ++sample_i) {
-                float x_sample = x + MSAA_OFFSET[sample_i][0];
-                float y_sample = y + MSAA_OFFSET[sample_i][1];
+                float x_sample = x + SSAA_OFFSET[sample_i][0];
+                float y_sample = y + SSAA_OFFSET[sample_i][1];
+                int sample_index = get_sample_index(x, y, sample_i);
 
                 if (insideTriangle(x_sample, y_sample, t.v)) {
                     auto [alpha, beta, gamma] = computeBarycentric2D(x_sample, y_sample, t.v);
@@ -133,16 +133,18 @@ void rst::rasterizer::rasterize_triangle(const Triangle& t) {
                     z_interpolated *= w_reciprocal;
 
                     // TODO : set the current pixel (use the set_pixel function) to the color of the triangle (use getColor function) if it should be painted.
-                    if (z_interpolated < sample_depth_buf[get_sample_index(x, y, sample_i)]) {
-                        sample_depth_buf[get_sample_index(x, y, sample_i)] = z_interpolated;
-                        covered_count++;
+                    if (z_interpolated < sample_depth_buf[sample_index]) {
+                        sample_depth_buf[sample_index] = z_interpolated;
+                        sample_color_buf[sample_index] = t.getColor();
                     }
                 }
             }
 
-            if (covered_count > 0) {
-                set_pixel(x, y, t.getColor(), static_cast<float>(covered_count) / N);
+            Eigen::Vector3f resolved_color = Eigen::Vector3f::Zero();
+            for (int sample_i = 0; sample_i < N; ++sample_i) {
+                resolved_color += sample_color_buf[get_sample_index(x, y, sample_i)];
             }
+            frame_buf[get_index(x, y)] = resolved_color / static_cast<float>(N);
         }
     }
 
@@ -168,6 +170,7 @@ void rst::rasterizer::clear(rst::Buffers buff)
     if ((buff & rst::Buffers::Color) == rst::Buffers::Color)
     {
         std::fill(frame_buf.begin(), frame_buf.end(), Eigen::Vector3f{0, 0, 0});
+        std::fill(sample_color_buf.begin(), sample_color_buf.end(), Eigen::Vector3f{0, 0, 0});
     }
     if ((buff & rst::Buffers::Depth) == rst::Buffers::Depth)
     {
@@ -180,7 +183,8 @@ rst::rasterizer::rasterizer(int w, int h) : width(w), height(h)
 {
     frame_buf.resize(w * h);
     depth_buf.resize(w * h);
-    sample_depth_buf.resize(w * h * 4); // MSAA 4x
+    sample_color_buf.resize(w * h * 4, Eigen::Vector3f{0, 0, 0});
+    sample_depth_buf.resize(w * h * 4); // SSAA 4x
 }
 
 int rst::rasterizer::get_index(int x, int y)
@@ -188,14 +192,15 @@ int rst::rasterizer::get_index(int x, int y)
     return (height-1-y)*width + x;
 }
 
-// MSAA
+// 4x SSAA
+// Screen: bottom-left origin
+// Sample: top-left origin
 int rst::rasterizer::get_sample_index(int sample_x, int sample_y, int sample_i)
 {
     return ((height-1-sample_y)*width + sample_x) * 4 + sample_i;
 }
 
 
-// 修改后的 set_pixel 函数，增加了 coverage_ratio 参数，表示当前像素被覆盖的程度（0~1 之间）。在设置像素颜色时，使用覆盖率对颜色进行加权平均，以实现抗锯齿效果。
 void rst::rasterizer::set_pixel(const int x, const int y, const Eigen::Vector3f& color, const float coverage_ratio)
 {
     //old index: auto ind = point.y() + point.x() * width;

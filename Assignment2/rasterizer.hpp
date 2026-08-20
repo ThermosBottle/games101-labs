@@ -93,10 +93,11 @@ namespace rst
         std::vector<Eigen::Vector3f> frame_buf;
 
         std::vector<float> depth_buf;
+        std::vector<Eigen::Vector3f> sample_color_buf;
         std::vector<float> sample_depth_buf;
         int get_index(int x, int y);
         int get_sample_index(int x, int y, int sample_i);
-        static const float MSAA_OFFSET[4][2];
+        static const float SSAA_OFFSET[4][2];
 
         int width, height;
 
