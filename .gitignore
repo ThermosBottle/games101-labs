@@ -1,6 +1,7 @@
 # VS Code workspace/user settings
 .vscode/
 **/.vscode/
+.devcontainer/
 
 # Build directories
 build/

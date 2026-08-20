@@ -19,15 +19,30 @@ Eigen::Matrix4f get_view_matrix(Eigen::Vector3f eye_pos)
     return view;
 }
 
-Eigen::Matrix4f get_model_matrix(float rotation_angle)
+Eigen::Matrix4f get_model_matrix(Eigen::Vector3f rotation_angle)
 {
-    Eigen::Matrix4f model = Eigen::Matrix4f::Identity();
+    const Eigen::Vector3f euler = rotation_angle * static_cast<float>(MY_PI / 180.0);
 
-    // TODO: Implement this function
-    // Create the model matrix for rotating the triangle around the Z axis.
-    // Then return it.
+    Eigen::Matrix4f Rx = Eigen::Matrix4f::Identity();
+    Eigen::Matrix4f Ry = Eigen::Matrix4f::Identity();
+    Eigen::Matrix4f Rz = Eigen::Matrix4f::Identity();
 
-    return model;
+    Rx << 1, 0, 0, 0,
+        0, std::cos(euler.x()), -std::sin(euler.x()), 0,
+        0, std::sin(euler.x()), std::cos(euler.x()), 0,
+        0, 0, 0, 1;
+
+    Ry << std::cos(euler.y()), 0, std::sin(euler.y()), 0,
+        0, 1, 0, 0,
+        -std::sin(euler.y()), 0, std::cos(euler.y()), 0,
+        0, 0, 0, 1;
+
+    Rz << std::cos(euler.z()), -std::sin(euler.z()), 0, 0,
+        std::sin(euler.z()), std::cos(euler.z()), 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1;
+
+    return Rz * Ry * Rx;
 }
 
 Eigen::Matrix4f get_projection_matrix(float eye_fov, float aspect_ratio,
@@ -40,20 +55,28 @@ Eigen::Matrix4f get_projection_matrix(float eye_fov, float aspect_ratio,
     // TODO: Implement this function
     // Create the projection matrix for the given parameters.
     // Then return it.
+    projection << 1 / (aspect_ratio * tan(eye_fov / 2 / 180 * MY_PI)), 0, 0, 0,
+        0, 1 / (tan(eye_fov / 2 / 180 * MY_PI)), 0, 0,
+        0, 0, -(zNear + zFar) / (zNear - zFar), -(2 * zNear * zFar) / (zNear - zFar),
+        0, 0, -1, 0;
 
     return projection;
 }
 
-int main(int argc, const char** argv)
+int main(int argc, const char **argv)
 {
-    float angle = 0;
+    // float angle = 0;
+    Eigen::Vector3f angle = {0, 0, 0};
     bool command_line = false;
     std::string filename = "output.png";
 
-    if (argc >= 3) {
+    if (argc >= 3)
+    {
         command_line = true;
-        angle = std::stof(argv[2]); // -r by default
-        if (argc == 4) {
+        // angle = std::stof(argv[2]); // -r by default
+        angle.z() = std::stof(argv[2]); // -r by default
+        if (argc == 4)
+        {
             filename = std::string(argv[3]);
         }
         else
@@ -74,13 +97,17 @@ int main(int argc, const char** argv)
     int key = 0;
     int frame_count = 0;
 
-    if (command_line) {
+    if (command_line)
+    {
         r.clear(rst::Buffers::Color | rst::Buffers::Depth);
 
         r.set_model(get_model_matrix(angle));
         r.set_view(get_view_matrix(eye_pos));
         r.set_projection(get_projection_matrix(45, 1, 0.1, 50));
 
+        r.draw_axis_line(Eigen::Vector3f(0, 0, 0), Eigen::Vector3f(3, 0, 0), Eigen::Vector3f(255, 0, 0));
+        r.draw_axis_line(Eigen::Vector3f(0, 0, 0), Eigen::Vector3f(0, 3, 0), Eigen::Vector3f(0, 255, 0));
+        r.draw_axis_line(Eigen::Vector3f(0, 0, 0), Eigen::Vector3f(0, 0, 3), Eigen::Vector3f(0, 0, 255));
         r.draw(pos_id, ind_id, rst::Primitive::Triangle);
         cv::Mat image(700, 700, CV_32FC3, r.frame_buffer().data());
         image.convertTo(image, CV_8UC3, 1.0f);
@@ -90,13 +117,17 @@ int main(int argc, const char** argv)
         return 0;
     }
 
-    while (key != 27) {
+    while (key != 27)
+    {
         r.clear(rst::Buffers::Color | rst::Buffers::Depth);
 
         r.set_model(get_model_matrix(angle));
         r.set_view(get_view_matrix(eye_pos));
         r.set_projection(get_projection_matrix(45, 1, 0.1, 50));
 
+        r.draw_axis_line(Eigen::Vector3f(0, 0, 0), Eigen::Vector3f(3, 0, 0), Eigen::Vector3f(255, 0, 0));
+        r.draw_axis_line(Eigen::Vector3f(0, 0, 0), Eigen::Vector3f(0, 3, 0), Eigen::Vector3f(0, 255, 0));
+        r.draw_axis_line(Eigen::Vector3f(0, 0, 0), Eigen::Vector3f(0, 0, 3), Eigen::Vector3f(0, 0, 255));
         r.draw(pos_id, ind_id, rst::Primitive::Triangle);
 
         cv::Mat image(700, 700, CV_32FC3, r.frame_buffer().data());
@@ -106,11 +137,29 @@ int main(int argc, const char** argv)
 
         std::cout << "frame count: " << frame_count++ << '\n';
 
-        if (key == 'a') {
-            angle += 10;
+        if (key == 'a')
+        {
+            angle.z() += 10;
         }
-        else if (key == 'd') {
-            angle -= 10;
+        else if (key == 'd')
+        {
+            angle.z() -= 10;
+        }
+        else if (key == 'w')
+        {
+            angle.x() += 10;
+        }
+        else if (key == 's')
+        {
+            angle.x() -= 10;
+        }
+        else if (key == 'q')
+        {
+            angle.y() += 10;
+        }
+        else if (key == 'e')
+        {
+            angle.y() -= 10;
         }
     }
 

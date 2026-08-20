@@ -59,6 +59,8 @@ class rasterizer
     void set_projection(const Eigen::Matrix4f& p);
 
     void set_pixel(const Eigen::Vector3f& point, const Eigen::Vector3f& color);
+    void draw_axis_line(const Eigen::Vector3f& begin, const Eigen::Vector3f& end,
+                        const Eigen::Vector3f& color);
 
     void clear(Buffers buff);
 
@@ -68,6 +70,7 @@ class rasterizer
 
   private:
     void draw_line(Eigen::Vector3f begin, Eigen::Vector3f end);
+    Eigen::Vector3f transform_to_screen(const Eigen::Vector3f& vertex) const;
     void rasterize_wireframe(const Triangle& t);
 
   private:
