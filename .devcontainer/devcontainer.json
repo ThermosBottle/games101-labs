@@ -1,0 +1,33 @@
+{
+  "name": "GAMES101 CUDA",
+  "image": "graphics-cuda:12.6",
+
+  "workspaceFolder": "/workspace",
+
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+
+  "runArgs": ["--gpus=all","--ipc=host"],
+
+  "mounts": [
+      "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind",
+      "source=/mnt/wslg,target=/mnt/wslg,type=bind"
+  ],
+
+  "containerEnv": {
+      "DISPLAY": "${localEnv:DISPLAY}",
+      "WAYLAND_DISPLAY": "${localEnv:WAYLAND_DISPLAY}",
+      "XDG_RUNTIME_DIR": "${localEnv:XDG_RUNTIME_DIR}",
+      "PULSE_SERVER": "${localEnv:PULSE_SERVER}"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "ms-azuretools.vscode-docker",
+        "saoudrizwan.claude-dev"
+      ]
+    }
+  }
+}
