@@ -212,7 +212,7 @@ void rst::rasterizer::draw(std::vector<Triangle *> &TriangleList)
         // Viewport transformation
         for (auto &vert : v)
         {
-            vert.x() = 0.5 * width * (vert.x() + 1.0);
+            vert.x() = 0.5 * width * (1.0 - vert.x());
             vert.y() = 0.5 * height * (vert.y() + 1.0);
             vert.z() = vert.z() * f1 + f2;
         }
@@ -381,20 +381,18 @@ rst::rasterizer::rasterizer(int w, int h) : width(w), height(h)
 
 int rst::rasterizer::get_index(int x, int y)
 {
-    // debug
-    return (height - 1 - y) * width + x;
+    return y * width + x;
 }
 
 void rst::rasterizer::set_pixel(const Vector2i &point, const Eigen::Vector3f &color)
 {
-    // old index: auto ind = point.y() + point.x() * width;
-    int ind = (height - point.y()) * width + point.x();
+    int ind = point.y() * width + point.x();
     frame_buf[ind] = color;
 }
 
 int rst::rasterizer::get_sample_index(int sample_x, int sample_y, int sample_i)
 {
-    return ((height - 1 - sample_y) * width + sample_x) * 4 + sample_i;
+    return (sample_y * width + sample_x) * 4 + sample_i;
 }
 
 void rst::rasterizer::set_vertex_shader(std::function<Eigen::Vector3f(vertex_shader_payload)> vert_shader)
