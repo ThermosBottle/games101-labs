@@ -97,7 +97,7 @@ namespace rst
         std::vector<float> sample_depth_buf;
         int get_index(int x, int y);
         int get_sample_index(int x, int y, int sample_i);
-        static const float SSAA_OFFSET[4][2];
+        static const float MSAA_OFFSET[4][2];
 
         int width, height;
 

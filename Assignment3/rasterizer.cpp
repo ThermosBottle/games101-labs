@@ -238,20 +238,18 @@ void rst::rasterizer::draw(std::vector<Triangle *> &TriangleList)
     }
 }
 
-static Eigen::Vector3f interpolate(float alpha, float beta, float gamma, const Eigen::Vector3f &vert1, const Eigen::Vector3f &vert2, const Eigen::Vector3f &vert3, float weight)
+static Eigen::Vector3f interpolate(float alpha, float beta, float gamma, const Eigen::Vector3f &vert1, const Eigen::Vector3f &vert2, const Eigen::Vector3f &vert3, const Eigen::Vector3f &w_inv)
 {
-    return (alpha * vert1 + beta * vert2 + gamma * vert3) / weight;
+    Eigen::Vector3f bary = {alpha, beta, gamma};
+    Eigen::Vector3f result = ((alpha * vert1 * w_inv[0]) + (beta * vert2 * w_inv[1]) + (gamma * vert3 * w_inv[2])) / bary.dot(w_inv);
+    return result;
 }
 
-static Eigen::Vector2f interpolate(float alpha, float beta, float gamma, const Eigen::Vector2f &vert1, const Eigen::Vector2f &vert2, const Eigen::Vector2f &vert3, float weight)
+static Eigen::Vector2f interpolate(float alpha, float beta, float gamma, const Eigen::Vector2f &vert1, const Eigen::Vector2f &vert2, const Eigen::Vector2f &vert3, const Eigen::Vector3f &w_inv)
 {
-    auto u = (alpha * vert1[0] + beta * vert2[0] + gamma * vert3[0]);
-    auto v = (alpha * vert1[1] + beta * vert2[1] + gamma * vert3[1]);
-
-    u /= weight;
-    v /= weight;
-
-    return Eigen::Vector2f(u, v);
+    Eigen::Vector3f bary = {alpha, beta, gamma};
+    Eigen::Vector2f result = ((alpha * vert1 * w_inv[0]) + (beta * vert2 * w_inv[1]) + (gamma * vert3 * w_inv[2])) / bary.dot(w_inv);
+    return result;
 }
 
 // Screen space rasterization
@@ -275,12 +273,12 @@ void rst::rasterizer::rasterize_triangle(const Triangle &t, const std::array<Eig
     {
         for (int y = std::floor(std::min({v[0].y(), v[1].y(), v[2].y()})); y <= std::ceil(std::max({v[0].y(), v[1].y(), v[2].y()})); ++y)
         {
+            std::vector<int> sample_mask(N, 0);
             for (int sample_i = 0; sample_i < N; ++sample_i)
             {
                 float x_sample = x + MSAA_OFFSET[sample_i][0];
                 float y_sample = y + MSAA_OFFSET[sample_i][1];
                 int sample_index = get_sample_index(x, y, sample_i);
-
                 if (insideTriangle(x_sample, y_sample, t.v))
                 {
                     auto [alpha, beta, gamma] = computeBarycentric2D(x_sample, y_sample, t.v);
@@ -292,7 +290,29 @@ void rst::rasterizer::rasterize_triangle(const Triangle &t, const std::array<Eig
                     if (z_interpolated < sample_depth_buf[sample_index])
                     {
                         sample_depth_buf[sample_index] = z_interpolated;
-                        sample_color_buf[sample_index] = t.color[0] * 255.0f;
+                        sample_mask[sample_i] = 1;
+                        // sample_color_buf[sample_index] = t.getColor();
+                    }
+                }
+            }
+            if (insideTriangle(x + 0.5, y + 0.5, t.v))
+            {
+                auto [alpha, beta, gamma] = computeBarycentric2D(x + 0.5, y + 0.5, t.v);
+
+                Eigen::Vector3f w_inv = {1 / v[0].w(), 1 / v[1].w(), 1 / v[2].w()};
+
+                Eigen::Vector3f interpolated_color = interpolate(alpha, beta, gamma, t.color[0], t.color[1], t.color[2], w_inv);
+                Eigen::Vector3f interpolated_normal = interpolate(alpha, beta, gamma, t.normal[0], t.normal[1], t.normal[2], w_inv);
+                Eigen::Vector2f interpolated_texcoords = interpolate(alpha, beta, gamma, t.tex_coords[0], t.tex_coords[1], t.tex_coords[2], w_inv);
+                Eigen::Vector3f interpolated_shadingcoords = interpolate(alpha, beta, gamma, view_pos[0], view_pos[1], view_pos[2], w_inv);
+                fragment_shader_payload payload(interpolated_color, interpolated_normal, interpolated_texcoords, texture ? &*texture : nullptr);
+                payload.view_pos = interpolated_shadingcoords;
+                Eigen::Vector3f pixel_color = fragment_shader(payload);
+                for (int sample_i = 0; sample_i < N; ++sample_i)
+                {
+                    if (sample_mask[sample_i])
+                    {
+                        sample_color_buf[get_sample_index(x, y, sample_i)] = pixel_color;
                     }
                 }
             }

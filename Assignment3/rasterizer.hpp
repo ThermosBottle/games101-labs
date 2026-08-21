@@ -113,7 +113,7 @@ namespace rst
         int get_index(int x, int y);
 
         std::vector<Eigen::Vector3f> sample_color_buf; // MSAA 4x
-        std::vector<float> sample_depth_buf; // MSAA 4x
+        std::vector<float> sample_depth_buf;           // MSAA 4x
         int get_sample_index(int sample_x, int sample_y, int sample_i);
 
         const float MSAA_OFFSET[4][2] = {

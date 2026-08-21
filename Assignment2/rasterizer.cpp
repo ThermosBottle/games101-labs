@@ -39,7 +39,7 @@ auto to_vec4(const Eigen::Vector3f& v3, float w = 1.0f)
     return Vector4f(v3.x(), v3.y(), v3.z(), w);
 }
 
-const float rst::rasterizer::SSAA_OFFSET[4][2] = {
+const float rst::rasterizer::MSAA_OFFSET[4][2] = {
     { 0.375, 0.125 },
     { 0.875, 0.375 },
     { 0.125, 0.625 },
@@ -115,15 +115,15 @@ void rst::rasterizer::draw(pos_buf_id pos_buffer, ind_buf_id ind_buffer, col_buf
 //Screen space rasterization
 void rst::rasterizer::rasterize_triangle(const Triangle& t) {
     auto v = t.toVector4();
-    int N = 4; // SSAA 4x
+    int N = 4; // MSAA 4x
 
     // TODO : Find out the bounding box of current triangle.
     // iterate through the pixel and find if the current pixel is inside the triangle
     for (int x = std::floor(std::min({v[0].x(), v[1].x(), v[2].x()})); x <= std::ceil(std::max({v[0].x(), v[1].x(), v[2].x()})); ++x) {
         for (int y = std::floor(std::min({v[0].y(), v[1].y(), v[2].y()})); y <= std::ceil(std::max({v[0].y(), v[1].y(), v[2].y()})); ++y) {
             for (int sample_i = 0; sample_i < N; ++sample_i) {
-                float x_sample = x + SSAA_OFFSET[sample_i][0];
-                float y_sample = y + SSAA_OFFSET[sample_i][1];
+                float x_sample = x + MSAA_OFFSET[sample_i][0];
+                float y_sample = y + MSAA_OFFSET[sample_i][1];
                 int sample_index = get_sample_index(x, y, sample_i);
 
                 if (insideTriangle(x_sample, y_sample, t.v)) {
@@ -184,7 +184,7 @@ rst::rasterizer::rasterizer(int w, int h) : width(w), height(h)
     frame_buf.resize(w * h);
     depth_buf.resize(w * h);
     sample_color_buf.resize(w * h * 4, Eigen::Vector3f{0, 0, 0});
-    sample_depth_buf.resize(w * h * 4); // SSAA 4x
+    sample_depth_buf.resize(w * h * 4); // MSAA 4x
 }
 
 int rst::rasterizer::get_index(int x, int y)
@@ -192,7 +192,7 @@ int rst::rasterizer::get_index(int x, int y)
     return (height-1-y)*width + x;
 }
 
-// 4x SSAA
+// 4x MSAA
 // Screen: bottom-left origin
 // Sample: top-left origin
 int rst::rasterizer::get_sample_index(int sample_x, int sample_y, int sample_i)
