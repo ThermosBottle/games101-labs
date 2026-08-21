@@ -274,6 +274,7 @@ void rst::rasterizer::rasterize_triangle(const Triangle &t, const std::array<Eig
         for (int y = std::floor(std::min({v[0].y(), v[1].y(), v[2].y()})); y <= std::ceil(std::max({v[0].y(), v[1].y(), v[2].y()})); ++y)
         {
             std::vector<int> sample_mask(N, 0);
+            bool has_covered_sample = false;
             for (int sample_i = 0; sample_i < N; ++sample_i)
             {
                 float x_sample = x + MSAA_OFFSET[sample_i][0];
@@ -291,11 +292,12 @@ void rst::rasterizer::rasterize_triangle(const Triangle &t, const std::array<Eig
                     {
                         sample_depth_buf[sample_index] = z_interpolated;
                         sample_mask[sample_i] = 1;
+                        has_covered_sample = true;
                         // sample_color_buf[sample_index] = t.getColor();
                     }
                 }
             }
-            if (insideTriangle(x + 0.5, y + 0.5, t.v))
+            if (has_covered_sample)
             {
                 auto [alpha, beta, gamma] = computeBarycentric2D(x + 0.5, y + 0.5, t.v);
 
@@ -379,7 +381,8 @@ rst::rasterizer::rasterizer(int w, int h) : width(w), height(h)
 
 int rst::rasterizer::get_index(int x, int y)
 {
-    return (height - y) * width + x;
+    // debug
+    return (height - 1 - y) * width + x;
 }
 
 void rst::rasterizer::set_pixel(const Vector2i &point, const Eigen::Vector3f &color)
