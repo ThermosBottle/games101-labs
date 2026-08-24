@@ -8,6 +8,19 @@ void Scene::buildBVH()
 {
     printf(" - Generating BVH...\n\n");
     this->bvh = new BVHAccel(objects, 1, BVHAccel::SplitMethod::NAIVE);
+
+    emitters.clear();
+    emitterAreaCdf.clear();
+    totalEmitterArea = 0.0f;
+    for (Object* object : objects)
+    {
+        if (object->hasEmit())
+        {
+            totalEmitterArea += object->getArea();
+            emitters.push_back(object);
+            emitterAreaCdf.push_back(totalEmitterArea);
+        }
+    }
 }
 
 Intersection Scene::intersect(const Ray &ray) const
@@ -17,28 +30,15 @@ Intersection Scene::intersect(const Ray &ray) const
 
 void Scene::sampleLight(Intersection &pos, float &pdf) const
 {
-    float emit_area_sum = 0;
-    for (uint32_t k = 0; k < objects.size(); ++k)
+    if (emitters.empty() || totalEmitterArea <= 0.0f)
     {
-        if (objects[k]->hasEmit())
-        {
-            emit_area_sum += objects[k]->getArea();
-        }
+        pdf = 0.0f;
+        return;
     }
-    float p = get_random_float() * emit_area_sum;
-    emit_area_sum = 0;
-    for (uint32_t k = 0; k < objects.size(); ++k)
-    {
-        if (objects[k]->hasEmit())
-        {
-            emit_area_sum += objects[k]->getArea();
-            if (p <= emit_area_sum)
-            {
-                objects[k]->Sample(pos, pdf);
-                break;
-            }
-        }
-    }
+    const float p = get_random_float() * totalEmitterArea;
+    const auto it = std::lower_bound(emitterAreaCdf.begin(), emitterAreaCdf.end(), p);
+    const size_t index = static_cast<size_t>(it - emitterAreaCdf.begin());
+    emitters[std::min(index, emitters.size() - 1)]->Sample(pos, pdf);
 }
 
 bool Scene::trace(
@@ -79,6 +79,8 @@ Vector3f Scene::castRay(const Ray &ray, int depth) const
     Intersection pos;
     float pdf_light;
     sampleLight(pos, pdf_light);
+    if (pdf_light <= EPSILON)
+        return L_dir;
     Vector3f lightDir = normalize(pos.coords - intersection.coords);
     float lightDistance = (pos.coords - intersection.coords).norm();
     Vector3f hitPoint = intersection.coords;

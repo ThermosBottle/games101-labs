@@ -2,6 +2,8 @@
 #include <iostream>
 #include <cmath>
 #include <random>
+#include <thread>
+#include <chrono>
 
 #undef M_PI
 #define M_PI 3.141592653589793f
@@ -30,10 +32,18 @@ inline  bool solveQuadratic(const float &a, const float &b, const float &c, floa
 
 inline float get_random_float()
 {
-    std::random_device dev;
-    std::mt19937 rng(dev());
-    std::uniform_real_distribution<float> dist(0.f, 1.f); // distribution in range [1, 6]
-
+    // One generator per worker avoids constructing random_device and mt19937
+    // for every sample and keeps random state out of shared memory.
+    thread_local std::mt19937 rng([] {
+        std::random_device dev;
+        const auto clockSeed = static_cast<unsigned int>(
+            std::chrono::high_resolution_clock::now().time_since_epoch().count());
+        const auto threadSeed = static_cast<unsigned int>(
+            std::hash<std::thread::id>{}(std::this_thread::get_id()));
+        std::seed_seq seed{dev(), clockSeed, threadSeed};
+        return std::mt19937(seed);
+    }());
+    thread_local std::uniform_real_distribution<float> dist(0.f, 1.f);
     return dist(rng);
 }
 

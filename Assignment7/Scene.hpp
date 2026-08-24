@@ -5,6 +5,7 @@
 #pragma once
 
 #include <vector>
+#include <algorithm>
 #include "Vector.hpp"
 #include "Object.hpp"
 #include "Light.hpp"
@@ -46,6 +47,13 @@ public:
     // creating the scene (adding objects and lights)
     std::vector<Object* > objects;
     std::vector<std::unique_ptr<Light> > lights;
+
+private:
+    std::vector<Object*> emitters;
+    std::vector<float> emitterAreaCdf;
+    float totalEmitterArea = 0.0f;
+
+public:
 
     // Compute reflection direction
     Vector3f reflect(const Vector3f &I, const Vector3f &N) const
