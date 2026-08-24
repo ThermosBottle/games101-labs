@@ -4,58 +4,59 @@
 #include <utility>
 #include "BVH.hpp"
 
-namespace {
-
-constexpr int kSAHBucketCount = 16;
-
-struct BucketInfo {
-    int count = 0;
-    Bounds3 bounds;
-};
-
-int getBucketIndex(const Bounds3& centroidBounds, const Vector3f& centroid, int dim)
+// bucket and utility functions for SAH partitioning
+namespace
 {
-    Vector3f offset = centroidBounds.Offset(centroid);
-    double axisOffset = dim == 0 ? offset.x : (dim == 1 ? offset.y : offset.z);
-    int bucket = static_cast<int>(kSAHBucketCount * axisOffset);
-    if (bucket == kSAHBucketCount)
-        bucket = kSAHBucketCount - 1;
-    if (bucket < 0)
-        bucket = 0;
-    return bucket;
-}
 
-void sortByCentroid(std::vector<Object*>& objects, int dim)
-{
-    switch (dim)
+    // const SAH bucket count for partitioning
+    constexpr int kSAHBucketCount = 16;
+
+    struct BucketInfo
     {
-    case 0:
-        std::sort(objects.begin(), objects.end(), [](auto f1, auto f2) {
-            return f1->getBounds().Centroid().x < f2->getBounds().Centroid().x;
-        });
-        break;
-    case 1:
-        std::sort(objects.begin(), objects.end(), [](auto f1, auto f2) {
-            return f1->getBounds().Centroid().y < f2->getBounds().Centroid().y;
-        });
-        break;
-    default:
-        std::sort(objects.begin(), objects.end(), [](auto f1, auto f2) {
-            return f1->getBounds().Centroid().z < f2->getBounds().Centroid().z;
-        });
-        break;
+        int count = 0;
+        Bounds3 bounds;
+    };
+
+    int getBucketIndex(const Bounds3 &centroidBounds, const Vector3f &centroid, int dim)
+    {
+        Vector3f offset = centroidBounds.Offset(centroid);
+        double axisOffset = dim == 0 ? offset.x : (dim == 1 ? offset.y : offset.z);
+        int bucket = static_cast<int>(kSAHBucketCount * axisOffset);
+        if (bucket == kSAHBucketCount)
+            bucket = kSAHBucketCount - 1;
+        if (bucket < 0)
+            bucket = 0;
+        return bucket;
     }
-}
 
-std::pair<std::vector<Object*>, std::vector<Object*>> splitByMedian(std::vector<Object*> objects, int dim)
-{
-    sortByCentroid(objects, dim);
+    void sortByCentroid(std::vector<Object *> &objects, int dim)
+    {
+        switch (dim)
+        {
+        case 0:
+            std::sort(objects.begin(), objects.end(), [](auto f1, auto f2)
+                      { return f1->getBounds().Centroid().x < f2->getBounds().Centroid().x; });
+            break;
+        case 1:
+            std::sort(objects.begin(), objects.end(), [](auto f1, auto f2)
+                      { return f1->getBounds().Centroid().y < f2->getBounds().Centroid().y; });
+            break;
+        default:
+            std::sort(objects.begin(), objects.end(), [](auto f1, auto f2)
+                      { return f1->getBounds().Centroid().z < f2->getBounds().Centroid().z; });
+            break;
+        }
+    }
 
-    auto mid = objects.begin() + (objects.size() / 2);
-    std::vector<Object*> left(objects.begin(), mid);
-    std::vector<Object*> right(mid, objects.end());
-    return {left, right};
-}
+    std::pair<std::vector<Object *>, std::vector<Object *>> splitByMedian(std::vector<Object *> objects, int dim)
+    {
+        sortByCentroid(objects, dim);
+
+        auto mid = objects.begin() + (objects.size() / 2);
+        std::vector<Object *> left(objects.begin(), mid);
+        std::vector<Object *> right(mid, objects.end());
+        return {left, right};
+    }
 
 } // namespace
 
@@ -115,12 +116,13 @@ BVHBuildNode *BVHAccel::recursiveBuild(std::vector<Object *> objects)
                 Union(centroidBounds, objects[i]->getBounds().Centroid());
         int dim = centroidBounds.maxExtent();
 
-        std::vector<Object*> leftshapes;
-        std::vector<Object*> rightshapes;
+        std::vector<Object *> leftshapes;
+        std::vector<Object *> rightshapes;
 
         if (splitMethod == SplitMethod::SAH)
         {
             Vector3f diagonal = centroidBounds.Diagonal();
+            // to check if we can split the objects into buckets along the chosen dimension
             bool canBucketSplit = (dim == 0 && diagonal.x > 0) ||
                                   (dim == 1 && diagonal.y > 0) ||
                                   (dim == 2 && diagonal.z > 0);
@@ -128,7 +130,7 @@ BVHBuildNode *BVHAccel::recursiveBuild(std::vector<Object *> objects)
             if (canBucketSplit)
             {
                 std::array<BucketInfo, kSAHBucketCount> buckets;
-                for (Object* object : objects)
+                for (Object *object : objects)
                 {
                     Bounds3 objectBounds = object->getBounds();
                     int bucketIndex = getBucketIndex(centroidBounds, objectBounds.Centroid(), dim);
@@ -190,7 +192,7 @@ BVHBuildNode *BVHAccel::recursiveBuild(std::vector<Object *> objects)
                 {
                     leftshapes.reserve(objects.size());
                     rightshapes.reserve(objects.size());
-                    for (Object* object : objects)
+                    for (Object *object : objects)
                     {
                         int bucketIndex = getBucketIndex(centroidBounds, object->getBounds().Centroid(), dim);
                         if (bucketIndex <= bestSplitBucket)
