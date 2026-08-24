@@ -1,6 +1,63 @@
 #include <algorithm>
 #include <cassert>
+#include <array>
+#include <utility>
 #include "BVH.hpp"
+
+namespace {
+
+constexpr int kSAHBucketCount = 16;
+
+struct BucketInfo {
+    int count = 0;
+    Bounds3 bounds;
+};
+
+int getBucketIndex(const Bounds3& centroidBounds, const Vector3f& centroid, int dim)
+{
+    Vector3f offset = centroidBounds.Offset(centroid);
+    double axisOffset = dim == 0 ? offset.x : (dim == 1 ? offset.y : offset.z);
+    int bucket = static_cast<int>(kSAHBucketCount * axisOffset);
+    if (bucket == kSAHBucketCount)
+        bucket = kSAHBucketCount - 1;
+    if (bucket < 0)
+        bucket = 0;
+    return bucket;
+}
+
+void sortByCentroid(std::vector<Object*>& objects, int dim)
+{
+    switch (dim)
+    {
+    case 0:
+        std::sort(objects.begin(), objects.end(), [](auto f1, auto f2) {
+            return f1->getBounds().Centroid().x < f2->getBounds().Centroid().x;
+        });
+        break;
+    case 1:
+        std::sort(objects.begin(), objects.end(), [](auto f1, auto f2) {
+            return f1->getBounds().Centroid().y < f2->getBounds().Centroid().y;
+        });
+        break;
+    default:
+        std::sort(objects.begin(), objects.end(), [](auto f1, auto f2) {
+            return f1->getBounds().Centroid().z < f2->getBounds().Centroid().z;
+        });
+        break;
+    }
+}
+
+std::pair<std::vector<Object*>, std::vector<Object*>> splitByMedian(std::vector<Object*> objects, int dim)
+{
+    sortByCentroid(objects, dim);
+
+    auto mid = objects.begin() + (objects.size() / 2);
+    std::vector<Object*> left(objects.begin(), mid);
+    std::vector<Object*> right(mid, objects.end());
+    return {left, right};
+}
+
+} // namespace
 
 BVHAccel::BVHAccel(std::vector<Object *> p, int maxPrimsInNode,
                    SplitMethod splitMethod)
@@ -57,31 +114,100 @@ BVHBuildNode *BVHAccel::recursiveBuild(std::vector<Object *> objects)
             centroidBounds =
                 Union(centroidBounds, objects[i]->getBounds().Centroid());
         int dim = centroidBounds.maxExtent();
-        switch (dim)
+
+        std::vector<Object*> leftshapes;
+        std::vector<Object*> rightshapes;
+
+        if (splitMethod == SplitMethod::SAH)
         {
-        case 0:
-            std::sort(objects.begin(), objects.end(), [](auto f1, auto f2)
-                      { return f1->getBounds().Centroid().x <
-                               f2->getBounds().Centroid().x; });
-            break;
-        case 1:
-            std::sort(objects.begin(), objects.end(), [](auto f1, auto f2)
-                      { return f1->getBounds().Centroid().y <
-                               f2->getBounds().Centroid().y; });
-            break;
-        case 2:
-            std::sort(objects.begin(), objects.end(), [](auto f1, auto f2)
-                      { return f1->getBounds().Centroid().z <
-                               f2->getBounds().Centroid().z; });
-            break;
+            Vector3f diagonal = centroidBounds.Diagonal();
+            bool canBucketSplit = (dim == 0 && diagonal.x > 0) ||
+                                  (dim == 1 && diagonal.y > 0) ||
+                                  (dim == 2 && diagonal.z > 0);
+
+            if (canBucketSplit)
+            {
+                std::array<BucketInfo, kSAHBucketCount> buckets;
+                for (Object* object : objects)
+                {
+                    Bounds3 objectBounds = object->getBounds();
+                    int bucketIndex = getBucketIndex(centroidBounds, objectBounds.Centroid(), dim);
+                    buckets[bucketIndex].count++;
+                    buckets[bucketIndex].bounds = Union(buckets[bucketIndex].bounds, objectBounds);
+                }
+
+                std::array<Bounds3, kSAHBucketCount> prefixBounds;
+                std::array<Bounds3, kSAHBucketCount> suffixBounds;
+                std::array<int, kSAHBucketCount> prefixCount{};
+                std::array<int, kSAHBucketCount> suffixCount{};
+
+                Bounds3 runningPrefixBounds;
+                int runningPrefixCount = 0;
+                for (int i = 0; i < kSAHBucketCount; ++i)
+                {
+                    runningPrefixCount += buckets[i].count;
+                    runningPrefixBounds = Union(runningPrefixBounds, buckets[i].bounds);
+                    prefixCount[i] = runningPrefixCount;
+                    prefixBounds[i] = runningPrefixBounds;
+                }
+
+                Bounds3 runningSuffixBounds;
+                int runningSuffixCount = 0;
+                for (int i = kSAHBucketCount - 1; i >= 0; --i)
+                {
+                    runningSuffixCount += buckets[i].count;
+                    runningSuffixBounds = Union(runningSuffixBounds, buckets[i].bounds);
+                    suffixCount[i] = runningSuffixCount;
+                    suffixBounds[i] = runningSuffixBounds;
+                }
+
+                double parentArea = bounds.SurfaceArea();
+                double minCost = std::numeric_limits<double>::infinity();
+                int bestSplitBucket = -1;
+
+                if (parentArea > 0)
+                {
+                    for (int i = 0; i < kSAHBucketCount - 1; ++i)
+                    {
+                        if (prefixCount[i] == 0 || suffixCount[i + 1] == 0)
+                            continue;
+
+                        double leftArea = prefixBounds[i].SurfaceArea();
+                        double rightArea = suffixBounds[i + 1].SurfaceArea();
+                        double cost = 1.0 +
+                                      (leftArea * prefixCount[i] + rightArea * suffixCount[i + 1]) /
+                                          parentArea;
+
+                        if (cost < minCost)
+                        {
+                            minCost = cost;
+                            bestSplitBucket = i;
+                        }
+                    }
+                }
+
+                if (bestSplitBucket != -1)
+                {
+                    leftshapes.reserve(objects.size());
+                    rightshapes.reserve(objects.size());
+                    for (Object* object : objects)
+                    {
+                        int bucketIndex = getBucketIndex(centroidBounds, object->getBounds().Centroid(), dim);
+                        if (bucketIndex <= bestSplitBucket)
+                            leftshapes.push_back(object);
+                        else
+                            rightshapes.push_back(object);
+                    }
+                }
+            }
         }
 
-        auto beginning = objects.begin();
-        auto middling = objects.begin() + (objects.size() / 2);
-        auto ending = objects.end();
-
-        auto leftshapes = std::vector<Object *>(beginning, middling);
-        auto rightshapes = std::vector<Object *>(middling, ending);
+        if (leftshapes.empty() || rightshapes.empty())
+        {
+            auto medianSplit = splitByMedian(objects, dim);
+            leftshapes = std::move(medianSplit.first);
+            rightshapes = std::move(medianSplit.second);
+        }
 
         assert(objects.size() == (leftshapes.size() + rightshapes.size()));
 
