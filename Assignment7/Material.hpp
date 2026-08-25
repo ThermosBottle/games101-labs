@@ -7,11 +7,15 @@
 
 #include "Vector.hpp"
 
-enum MaterialType { DIFFUSE};
+enum MaterialType
+{
+    DIFFUSE,
+    MICROFACET
+};
 
-class Material{
+class Material
+{
 private:
-
     // Compute reflection direction
     Vector3f reflect(const Vector3f &I, const Vector3f &N) const
     {
@@ -34,7 +38,15 @@ private:
         float cosi = clamp(-1, 1, dotProduct(I, N));
         float etai = 1, etat = ior;
         Vector3f n = N;
-        if (cosi < 0) { cosi = -cosi; } else { std::swap(etai, etat); n= -N; }
+        if (cosi < 0)
+        {
+            cosi = -cosi;
+        }
+        else
+        {
+            std::swap(etai, etat);
+            n = -N;
+        }
         float eta = etai / etat;
         float k = 1 - eta * eta * (1 - cosi * cosi);
         return k < 0 ? 0 : eta * I + (eta * cosi - sqrtf(k)) * n;
@@ -53,14 +65,19 @@ private:
     {
         float cosi = clamp(-1, 1, dotProduct(I, N));
         float etai = 1, etat = ior;
-        if (cosi > 0) {  std::swap(etai, etat); }
+        if (cosi > 0)
+        {
+            std::swap(etai, etat);
+        }
         // Compute sini using Snell's law
         float sint = etai / etat * sqrtf(std::max(0.f, 1 - cosi * cosi));
         // Total internal reflection
-        if (sint >= 1) {
+        if (sint >= 1)
+        {
             kr = 1;
         }
-        else {
+        else
+        {
             float cost = sqrtf(std::max(0.f, 1 - sint * sint));
             cosi = fabsf(cosi);
             float Rs = ((etat * cosi) - (etai * cost)) / ((etat * cosi) + (etai * cost));
@@ -71,32 +88,73 @@ private:
         // kt = 1 - kr;
     }
 
-    Vector3f toWorld(const Vector3f &a, const Vector3f &N){
+    Vector3f toWorld(const Vector3f &a, const Vector3f &N)
+    {
         Vector3f B, C;
-        if (std::fabs(N.x) > std::fabs(N.y)){
+        if (std::fabs(N.x) > std::fabs(N.y))
+        {
             float invLen = 1.0f / std::sqrt(N.x * N.x + N.z * N.z);
-            C = Vector3f(N.z * invLen, 0.0f, -N.x *invLen);
+            C = Vector3f(N.z * invLen, 0.0f, -N.x * invLen);
         }
-        else {
+        else
+        {
             float invLen = 1.0f / std::sqrt(N.y * N.y + N.z * N.z);
-            C = Vector3f(0.0f, N.z * invLen, -N.y *invLen);
+            C = Vector3f(0.0f, N.z * invLen, -N.y * invLen);
         }
         B = crossProduct(C, N);
         return a.x * B + a.y * C + a.z * N;
     }
 
+    // GGX/Trowbridge-Reitz normal distribution function. The half vector H
+    // describes the orientation of the microscopic mirror facets.
+    float distributionGGX(const Vector3f &N, const Vector3f &H) const
+    {
+        const float NdotH = std::max(0.0f, dotProduct(N, H));
+        const float alpha = std::max(0.001f, roughness * roughness);
+        const float alpha2 = alpha * alpha;
+        const float denominator = NdotH * NdotH * (alpha2 - 1.0f) + 1.0f;
+        return alpha2 / (M_PI * denominator * denominator);
+    }
+
+    // Schlick-GGX approximation of the Smith masking-shadowing term for one
+    // direction. It models the fact that a facet can be hidden from either
+    // the viewer or the light.
+    float geometrySchlickGGX(float NdotV) const
+    {
+        const float k = (roughness + 1.0f) * (roughness + 1.0f) / 8.0f;
+        return NdotV / (NdotV * (1.0f - k) + k);
+    }
+
+    float geometrySmith(const Vector3f &N,
+                        const Vector3f &V,
+                        const Vector3f &L) const
+    {
+        return geometrySchlickGGX(std::max(0.0f, dotProduct(N, V))) *
+               geometrySchlickGGX(std::max(0.0f, dotProduct(N, L)));
+    }
+
+    // Schlick's approximation gives the angle-dependent Fresnel reflectance.
+    Vector3f fresnelSchlick(float cosTheta) const
+    {
+        const float factor = std::pow(1.0f - clamp(0.0f, 1.0f, cosTheta), 5.0f);
+        return Ks + (Vector3f(1.0f) - Ks) * factor;
+    }
+
 public:
     MaterialType m_type;
-    //Vector3f m_color;
+    // Vector3f m_color;
     Vector3f m_emission;
     float ior;
     Vector3f Kd, Ks;
     float specularExponent;
-    //Texture tex;
+    // GGX roughness: low values produce a sharp highlight, high values a
+    // broad highlight. This is independent of the legacy exponent field.
+    float roughness;
+    // Texture tex;
 
-    inline Material(MaterialType t=DIFFUSE, Vector3f e=Vector3f(0,0,0));
+    inline Material(MaterialType t = DIFFUSE, Vector3f e = Vector3f(0, 0, 0));
     inline MaterialType getType();
-    //inline Vector3f getColor();
+    // inline Vector3f getColor();
     inline Vector3f getColorAt(double u, double v);
     inline Vector3f getEmission();
     inline bool hasEmission();
@@ -107,83 +165,136 @@ public:
     inline float pdf(const Vector3f &wi, const Vector3f &wo, const Vector3f &N);
     // given a ray, calculate the contribution of this ray
     inline Vector3f eval(const Vector3f &wi, const Vector3f &wo, const Vector3f &N);
-
 };
 
-Material::Material(MaterialType t, Vector3f e){
+Material::Material(MaterialType t, Vector3f e)
+{
     m_type = t;
-    //m_color = c;
+    // m_color = c;
     m_emission = e;
+    ior = 1.5f;
+    Kd = Vector3f(0.5f);
+    Ks = Vector3f(0.04f);
+    specularExponent = 32.0f;
+    roughness = 0.5f;
 }
 
-MaterialType Material::getType(){return m_type;}
-///Vector3f Material::getColor(){return m_color;}
-Vector3f Material::getEmission() {return m_emission;}
-bool Material::hasEmission() {
-    if (m_emission.norm() > EPSILON) return true;
-    else return false;
+MaterialType Material::getType() { return m_type; }
+/// Vector3f Material::getColor(){return m_color;}
+Vector3f Material::getEmission() { return m_emission; }
+bool Material::hasEmission()
+{
+    if (m_emission.norm() > EPSILON)
+        return true;
+    else
+        return false;
 }
 
-Vector3f Material::getColorAt(double u, double v) {
+Vector3f Material::getColorAt(double u, double v)
+{
     return Vector3f();
 }
 
+Vector3f Material::sample(const Vector3f &wi, const Vector3f &N)
+{
+    switch (m_type)
+    {
+    case DIFFUSE:
+    case MICROFACET:
+    {
+        // The assignment permits reusing the diffuse sampler for
+        // Microfacet. This is cosine-weighted sampling, so it remains
+        // simple and its PDF is shared by both material types.
+        const float x_1 = get_random_float();
+        const float x_2 = get_random_float();
+        const float z = std::sqrt(1.0f - x_1);
+        const float r = std::sqrt(x_1);
+        const float phi = 2.0f * M_PI * x_2;
+        Vector3f localRay(r * std::cos(phi), r * std::sin(phi), z);
+        return toWorld(localRay, N);
 
-Vector3f Material::sample(const Vector3f &wi, const Vector3f &N){
-    switch(m_type){
-        case DIFFUSE:
-        {
-            // Cosine-weighted hemisphere sampling matches the Lambertian
-            // BRDF. It spends more samples near the surface normal, where
-            // the cosine term contributes most, and therefore has much lower
-            // variance than uniform hemisphere sampling.
-            const float x_1 = get_random_float();
-            const float x_2 = get_random_float();
-            const float z = std::sqrt(1.0f - x_1);
-            const float r = std::sqrt(x_1);
-            const float phi = 2.0f * M_PI * x_2;
-            Vector3f localRay(r*std::cos(phi), r*std::sin(phi), z);
-            return toWorld(localRay, N);
-            
-            break;
-        }
+        break;
     }
-    // DIFFUSE is currently the only material type, but returning a safe
-    // value keeps this function well-defined if another type is added.
+    }
+    // Keep unsupported future material types well-defined instead of
+    // returning an uninitialized value.
     return Vector3f();
 }
 
-float Material::pdf(const Vector3f &wi, const Vector3f &wo, const Vector3f &N){
-    switch(m_type){
-        case DIFFUSE:
-        {
-            // The PDF of cosine-weighted hemisphere sampling is cos(theta)/PI.
-            // This must agree with sample(), otherwise the path throughput is
-            // biased and can show excessive noise or incorrect brightness.
-            const float cosTheta = dotProduct(wo, N);
-            return cosTheta > 0.0f ? cosTheta / M_PI : 0.0f;
-            break;
-        }
+float Material::pdf(const Vector3f &wi, const Vector3f &wo, const Vector3f &N)
+{
+    switch (m_type)
+    {
+    case DIFFUSE:
+    case MICROFACET:
+    {
+        // Both material types use cosine-weighted hemisphere sampling.
+        // The PDF must match sample(), even though Microfacet eval() is a
+        // Cook-Torrance BRDF rather than a Lambertian BRDF.
+        const float cosTheta = dotProduct(wo, N);
+        return cosTheta > 0.0f ? cosTheta / M_PI : 0.0f;
+        break;
+    }
     }
     return 0.0f;
 }
 
-Vector3f Material::eval(const Vector3f &wi, const Vector3f &wo, const Vector3f &N){
-    switch(m_type){
-        case DIFFUSE:
+Vector3f Material::eval(const Vector3f &wi, const Vector3f &wo, const Vector3f &N)
+{
+    switch (m_type)
+    {
+    case DIFFUSE:
+    {
+        // calculate the contribution of diffuse   model
+        float cosalpha = dotProduct(N, wo);
+        if (cosalpha > 0.0f)
         {
-            // calculate the contribution of diffuse   model
-            float cosalpha = dotProduct(N, wo);
-            if (cosalpha > 0.0f) {
-                Vector3f diffuse = Kd / M_PI;
-                return diffuse;
-            }
-            else
-                return Vector3f(0.0f);
-            break;
+            Vector3f diffuse = Kd / M_PI;
+            return diffuse;
         }
+        else
+            return Vector3f(0.0f);
+        break;
+    }
+    case MICROFACET:
+    {
+        // The path tracer passes wi as the direction of the incoming ray
+        // (from the camera/path origin toward the surface). Convert it to
+        // the conventional surface-to-view direction before evaluating
+        // the Cook-Torrance BRDF.
+        const Vector3f V = normalize(-wi);
+        const Vector3f L = normalize(wo);
+        const float NdotV = std::max(0.0f, dotProduct(N, V));
+        const float NdotL = std::max(0.0f, dotProduct(N, L));
+        if (NdotV <= 0.0f || NdotL <= 0.0f)
+            return Vector3f();
+
+        const Vector3f H = normalize(V + L);
+        const float VdotH = std::max(0.0f, dotProduct(V, H));
+        const float D = distributionGGX(N, H);
+        const float G = geometrySmith(N, V, L);
+        const Vector3f F = fresnelSchlick(VdotH);
+        const float denominator = 4.0f * NdotV * NdotL;
+
+        // Cook-Torrance microfacet BRDF: D is the facet distribution,
+        // G is masking/shadowing, and F is Fresnel reflectance.
+        const Vector3f specular = F * (D * G / denominator);
+
+        // A practical Microfacet material normally has both a diffuse base
+        // and a specular lobe. The previous implementation returned only
+        // specular, so the sphere was black except where a sampled light
+        // direction happened to fall inside the narrow highlight. Reduce the
+        // diffuse energy by (1 - F) to avoid counting the same reflected
+        // energy twice at grazing angles.
+        const Vector3f diffuse = Kd * (Vector3f(1.0f) - F) / M_PI;
+        const Vector3f result = diffuse + specular;
+        return (std::isfinite(result.x) && std::isfinite(result.y) &&
+                std::isfinite(result.z))
+                   ? result
+                   : Vector3f();
+    }
     }
     return Vector3f();
 }
 
-#endif //RAYTRACING_MATERIAL_H
+#endif // RAYTRACING_MATERIAL_H

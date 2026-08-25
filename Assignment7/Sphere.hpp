@@ -24,11 +24,18 @@ public:
         float b = 2 * dotProduct(ray.direction, L);
         float c = dotProduct(L, L) - radius2;
         float t0, t1;
-        float area = 4 * M_PI * radius2;
         if (!solveQuadratic(a, b, c, t0, t1)) return false;
-        if (t0 < 0) t0 = t1;
-        if (t0 < 0) return false;
-        return true;
+        const bool originInside = dotProduct(L, L) < radius2;
+
+        // For a ray starting just outside the sphere, t0 can be an
+        // extremely close self-intersection. Do not switch to t1 in that
+        // case: t1 is the far side of the same sphere and would incorrectly
+        // shadow a visible light. A ray starting inside the sphere must use
+        // t1, because t1 is its valid exit point.
+        if (!originInside && t0 <= ray.t_min + EPSILON)
+            return false;
+        const float t = originInside ? t1 : t0;
+        return std::isfinite(t) && t >= ray.t_min && t <= ray.t_max;
     }
     bool intersect(const Ray& ray, float &tnear, uint32_t &index) const
     {
@@ -40,9 +47,17 @@ public:
         float t0, t1;
         if (!
         solveQuadratic(a, b, c, t0, t1)) return false;
-        if (t0 < 0) t0 = t1;
-        if (t0 < 0) return false;
-        tnear = t0;
+        const bool originInside = dotProduct(L, L) < radius2;
+
+        // Ignore a near self-hit from the sphere surface instead of falling
+        // through to the far root. This keeps BVH/visibility queries from
+        // treating the back side of the same sphere as an occluder.
+        if (!originInside && t0 <= ray.t_min + EPSILON)
+            return false;
+        const float t = originInside ? t1 : t0;
+        if (!std::isfinite(t) || t < ray.t_min || t > ray.t_max)
+            return false;
+        tnear = t;
 
         return true;
     }
@@ -55,15 +70,24 @@ public:
         float c = dotProduct(L, L) - radius2;
         float t0, t1;
         if (!solveQuadratic(a, b, c, t0, t1)) return result;
-        if (t0 < 0) t0 = t1;
-        if (t0 < ray.t_min || t0 > ray.t_max || !std::isfinite(t0)) return result;
+        const bool originInside = dotProduct(L, L) < radius2;
+
+        // A shadow ray is launched from hitPoint + normal * EPSILON. If it
+        // immediately meets this sphere again, that root is numerical self
+        // intersection, not a real blocker. Returning no hit is important:
+        // selecting t1 here would incorrectly report the far side of the
+        // sphere and make large parts of the sphere black.
+        if (!originInside && t0 <= ray.t_min + EPSILON)
+            return result;
+        const float t = originInside ? t1 : t0;
+        if (t < ray.t_min || t > ray.t_max || !std::isfinite(t)) return result;
         result.happened=true;
 
-        result.coords = Vector3f(ray.origin + ray.direction * t0);
+        result.coords = Vector3f(ray.origin + ray.direction * t);
         result.normal = normalize(Vector3f(result.coords - center));
         result.m = this->m;
         result.obj = this;
-        result.distance = t0;
+        result.distance = t;
         return result;
 
     }
