@@ -133,30 +133,39 @@ Vector3f Material::sample(const Vector3f &wi, const Vector3f &N){
     switch(m_type){
         case DIFFUSE:
         {
-            // uniform sample on the hemisphere
-            float x_1 = get_random_float(), x_2 = get_random_float();
-            float z = std::fabs(1.0f - 2.0f * x_1);
-            float r = std::sqrt(1.0f - z * z), phi = 2 * M_PI * x_2;
+            // Cosine-weighted hemisphere sampling matches the Lambertian
+            // BRDF. It spends more samples near the surface normal, where
+            // the cosine term contributes most, and therefore has much lower
+            // variance than uniform hemisphere sampling.
+            const float x_1 = get_random_float();
+            const float x_2 = get_random_float();
+            const float z = std::sqrt(1.0f - x_1);
+            const float r = std::sqrt(x_1);
+            const float phi = 2.0f * M_PI * x_2;
             Vector3f localRay(r*std::cos(phi), r*std::sin(phi), z);
             return toWorld(localRay, N);
             
             break;
         }
     }
+    // DIFFUSE is currently the only material type, but returning a safe
+    // value keeps this function well-defined if another type is added.
+    return Vector3f();
 }
 
 float Material::pdf(const Vector3f &wi, const Vector3f &wo, const Vector3f &N){
     switch(m_type){
         case DIFFUSE:
         {
-            // uniform sample probability 1 / (2 * PI)
-            if (dotProduct(wo, N) > 0.0f)
-                return 0.5f / M_PI;
-            else
-                return 0.0f;
+            // The PDF of cosine-weighted hemisphere sampling is cos(theta)/PI.
+            // This must agree with sample(), otherwise the path throughput is
+            // biased and can show excessive noise or incorrect brightness.
+            const float cosTheta = dotProduct(wo, N);
+            return cosTheta > 0.0f ? cosTheta / M_PI : 0.0f;
             break;
         }
     }
+    return 0.0f;
 }
 
 Vector3f Material::eval(const Vector3f &wi, const Vector3f &wo, const Vector3f &N){
@@ -174,6 +183,7 @@ Vector3f Material::eval(const Vector3f &wi, const Vector3f &wo, const Vector3f &
             break;
         }
     }
+    return Vector3f();
 }
 
 #endif //RAYTRACING_MATERIAL_H

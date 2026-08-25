@@ -106,8 +106,11 @@ inline bool Bounds3::IntersectP(const Ray &ray, const Vector3f &invDir,
         if (dirIsNeg[i])
             std::swap(tin, tout);
 
-        t_max = tin > t_max ? tin : t_max;
-        t_min = tout < t_min ? tout : t_min;
+        // Keep the interval in which the ray is inside the slab. The old
+        // code updated the two bounds in reverse, which made BVH traversal
+        // accept/reject nodes incorrectly and produced diagonal shadow bands.
+        t_min = tin > t_min ? tin : t_min;
+        t_max = tout < t_max ? tout : t_max;
 
         if (t_min > t_max)
             return false;

@@ -39,6 +39,11 @@ void Scene::sampleLight(Intersection &pos, float &pdf) const
     const auto it = std::lower_bound(emitterAreaCdf.begin(), emitterAreaCdf.end(), p);
     const size_t index = static_cast<size_t>(it - emitterAreaCdf.begin());
     emitters[std::min(index, emitters.size() - 1)]->Sample(pos, pdf);
+    // The emitter is selected with probability area / totalEmitterArea and
+    // the point on that emitter is sampled with density 1 / area. Their
+    // product is therefore 1 / totalEmitterArea. Keeping this PDF explicit
+    // makes the estimator correct when more than one light is present.
+    pdf = 1.0f / totalEmitterArea;
 }
 
 bool Scene::trace(
@@ -75,28 +80,63 @@ Vector3f Scene::castRay(const Ray &ray, int depth) const
     }
     if (intersection.m->hasEmission())
         return intersection.m->getEmission();
+    // Stop only after checking emission, so a light hit at the final allowed
+    // bounce is still visible. This prevents unbounded recursion and noise.
+    if (depth >= maxDepth)
+        return L_dir;
 
     Intersection pos;
     float pdf_light;
     sampleLight(pos, pdf_light);
-    if (pdf_light <= EPSILON)
-        return L_dir;
-    Vector3f lightDir = normalize(pos.coords - intersection.coords);
-    float lightDistance = (pos.coords - intersection.coords).norm();
     Vector3f hitPoint = intersection.coords;
     Vector3f N = intersection.normal;
-    Vector3f shadowOrig = dotProduct(lightDir, N) < 0 ? hitPoint - N * EPSILON : hitPoint + N * EPSILON;
-
-    Ray shadowRay(shadowOrig, lightDir);
-    Intersection shadowIntersection = intersect(shadowRay);
-
-    if (shadowIntersection.happened && std::fabs(shadowIntersection.distance - lightDistance) < EPSILON)
+    // An invalid direct-light sample only invalidates direct lighting. Do not
+    // return here: the indirect bounce below is still a valid contribution.
+    const bool validLightSample =
+        std::isfinite(pdf_light) && pdf_light > 1e-7f &&
+        std::isfinite(pos.coords.x) && std::isfinite(pos.coords.y) &&
+        std::isfinite(pos.coords.z);
+    if (validLightSample)
     {
-        // visible
-        L_dir += pos.emit * intersection.m->eval(ray.direction, lightDir, N) * dotProduct(lightDir, N) * dotProduct(-lightDir, pos.normal) / powf(lightDistance, 2) / pdf_light;
+        const Vector3f toLight = pos.coords - intersection.coords;
+        const float lightDistance = std::sqrt(dotProduct(toLight, toLight));
+        if (std::isfinite(lightDistance) && lightDistance > EPSILON)
+        {
+            const Vector3f lightDir = toLight / lightDistance;
+            const float cosSurface = dotProduct(lightDir, N);
+            const float cosLight = dotProduct(-lightDir, pos.normal);
+            if (std::isfinite(cosSurface) && std::isfinite(cosLight) &&
+                cosSurface > 0.0f && cosLight > 0.0f)
+            {
+                const Vector3f shadowOrig = hitPoint + N * EPSILON;
+                Ray shadowRay(shadowOrig, lightDir);
+                // Test only the finite segment from the surface to the
+                // sampled light. The light itself is therefore not treated
+                // as an occluder, and objects behind it cannot shadow it.
+                shadowRay.t_min = EPSILON;
+                shadowRay.t_max = std::max(
+                    static_cast<double>(EPSILON),
+                    static_cast<double>(lightDistance) - 4.0 * EPSILON);
+                const Intersection shadowIntersection = intersect(shadowRay);
+                if (!shadowIntersection.happened)
+                {
+                    const Vector3f direct =
+                        pos.emit * intersection.m->eval(ray.direction, lightDir, N) *
+                        cosSurface * cosLight /
+                        (lightDistance * lightDistance) / pdf_light;
+                    if (std::isfinite(direct.x) && std::isfinite(direct.y) &&
+                        std::isfinite(direct.z))
+                        L_dir += direct;
+                }
+            }
+        }
     }
 
-    if (get_random_float() > RussianRoulette)
+    // Do not roulette the first few bounces: those paths carry most of the
+    // useful image energy. Russian roulette is unbiased after reweighting,
+    // but applying it too early increases visible variance.
+    const float continuationProbability = depth >= 3 ? RussianRoulette : 1.0f;
+    if (get_random_float() > continuationProbability)
         return L_dir;
     Vector3f L_indir(0, 0, 0);
     Vector3f wi = intersection.m->sample(ray.direction, N);
@@ -104,10 +144,18 @@ Vector3f Scene::castRay(const Ray &ray, int depth) const
 
     Ray indirRay(newOrig, wi);
     float pdf = intersection.m->pdf(ray.direction, wi, N);
-    // to aviod division by zero
-    if (pdf > EPSILON)
+    const float cosIndirect = dotProduct(wi, N);
+    if (std::isfinite(pdf) && pdf > 1e-7f && std::isfinite(cosIndirect) &&
+        cosIndirect > 0.0f && continuationProbability > 1e-7f)
     {
-        L_indir += castRay(Ray(newOrig, wi), depth + 1) * intersection.m->eval(ray.direction, wi, N) * dotProduct(wi, N) / pdf / RussianRoulette;
+        const Vector3f indirect = castRay(Ray(newOrig, wi), depth + 1) *
+                                   intersection.m->eval(ray.direction, wi, N) *
+                                   cosIndirect / pdf / continuationProbability;
+        if (std::isfinite(indirect.x) && std::isfinite(indirect.y) &&
+            std::isfinite(indirect.z))
+            L_indir += indirect;
     }
-    return L_dir + L_indir;
+    const Vector3f result = L_dir + L_indir;
+    return (std::isfinite(result.x) && std::isfinite(result.y) &&
+            std::isfinite(result.z)) ? result : Vector3f();
 }

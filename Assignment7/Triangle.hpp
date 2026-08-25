@@ -248,7 +248,8 @@ inline Intersection Triangle::getIntersection(Ray ray)
     float u, v, t_tmp = 0;
     if (rayTriangleIntersect(v0, v1, v2, ray.origin, ray.direction, t_tmp, u, v) == false)
         return inter;
-    else
+    else if (std::isfinite(t_tmp) &&
+             t_tmp >= ray.t_min && t_tmp <= ray.t_max)
     {
         inter.happened = true;
         inter.distance = t_tmp;

@@ -22,7 +22,10 @@ public:
     int height = 960;
     double fov = 40;
     Vector3f backgroundColor = Vector3f(0.235294, 0.67451, 0.843137);
-    int maxDepth = 1;
+    // Limit very long paths while still allowing several indirect bounces.
+    int maxDepth = 8;
+    // Russian roulette is enabled only after the first few bounces in
+    // castRay(), which reduces variance in the important early paths.
     float RussianRoulette = 0.8;
 
     Scene(int w, int h) : width(w), height(h)
