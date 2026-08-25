@@ -245,11 +245,16 @@ static void createKeyTables(void)
                                           XkbAllComponentsMask,
                                           XkbUseCoreKbd);
 
-        // Find the X11 key code -> GLFW key code mapping
-        for (scancode = descr->min_key_code;  scancode <= descr->max_key_code;  scancode++)
+        // XkbGetKeyboard may fail on an incomplete X server.  Fall back to
+        // the traditional X11 KeySym lookup below instead of dereferencing a
+        // null descriptor.
+        if (descr && descr->names && descr->names->keys)
         {
-            memcpy(name, descr->names->keys[scancode].name, XkbKeyNameLength);
-            name[XkbKeyNameLength] = 0;
+            // Find the X11 key code -> GLFW key code mapping
+            for (scancode = descr->min_key_code;  scancode <= descr->max_key_code;  scancode++)
+            {
+                memcpy(name, descr->names->keys[scancode].name, XkbKeyNameLength);
+                name[XkbKeyNameLength] = 0;
 
             // Map the key name to a GLFW key code. Note: We only map printable
             // keys here, and we use the US keyboard layout. The rest of the
@@ -305,11 +310,19 @@ static void createKeyTables(void)
             else if (strcmp(name, "LSGT") == 0) key = GLFW_KEY_WORLD_1;
             else key = GLFW_KEY_UNKNOWN;
 
-            if ((scancode >= 0) && (scancode < 256))
-                _glfw.x11.publicKeys[scancode] = key;
+                if ((scancode >= 0) && (scancode < 256))
+                    _glfw.x11.publicKeys[scancode] = key;
+            }
+        }
+        else
+        {
+            // Do not call XkbKeycodeToKeysym below with an unusable XKB
+            // descriptor.  The legacy X11 mapping is a safe fallback.
+            _glfw.x11.xkb.available = GL_FALSE;
         }
 
-        XkbFreeKeyboard(descr, 0, True);
+        if (descr)
+            XkbFreeKeyboard(descr, 0, True);
     }
 
     // Translate the un-translated key codes using traditional X11 KeySym

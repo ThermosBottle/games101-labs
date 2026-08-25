@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 2.8)
 project(RopeSim)
 
+# Prefer GLVND when both legacy OpenGL and GLVND libraries are installed.
+if(POLICY CMP0072)
+  cmake_policy(SET CMP0072 NEW)
+endif()
+
 #-------------------------------------------------------------------------------
 # Build options
 #-------------------------------------------------------------------------------
