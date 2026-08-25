@@ -8,6 +8,7 @@
 #include "Vector.hpp"
 #include <limits>
 #include <array>
+#include <cmath>
 
 class Bounds3
 {
@@ -91,13 +92,21 @@ public:
 inline bool Bounds3::IntersectP(const Ray &ray, const Vector3f &invDir,
                                 const std::array<int, 3> &dirIsNeg) const
 {
-    // invDir: ray direction(x,y,z), invDir=(1.0/x,1.0/y,1.0/z), use this because Multiply is faster that Division
-
-    // TODO test if ray bound intersects
+    // A Cornell-box wall has a degenerate bounding box on one axis.  Do not
+    // evaluate (p - origin) * (1 / direction) for a parallel ray on that
+    // axis: when p == origin this becomes 0 * infinity and produces NaN.
     double t_min = ray.t_min;
     double t_max = ray.t_max;
     for (int i = 0; i < 3; i++)
     {
+        if (std::fabs(ray.direction[i]) < 1e-12f)
+        {
+            if (ray.origin[i] < this->pMin[i] ||
+                ray.origin[i] > this->pMax[i])
+                return false;
+            continue;
+        }
+
         double tin = (this->pMin[i] - ray.origin[i]) * invDir[i];
         double tout = (this->pMax[i] - ray.origin[i]) * invDir[i];
 

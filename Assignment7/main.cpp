@@ -6,6 +6,7 @@
 #include "global.hpp"
 #include <chrono>
 #include <string.h>
+#include <string>
 
 // In the main function of the program, we create the scene (create objects and
 // lights) as well as set the options for the render (image width and height,
@@ -23,13 +24,17 @@ int main(int argc, char **argv)
         spp = atoi(argv[1]);
     }
     MaterialType type = DIFFUSE;
+    std::string method = "diffuse";
     if (argc == 3)
     {
         spp = atoi(argv[1]);
         if (strcmp(argv[2], "diffuse") == 0)
             type = DIFFUSE;
         else if (strcmp(argv[2], "microfacet") == 0)
+        {
             type = MICROFACET;
+            method = "microfacet";
+        }
         else
         {
             std::cerr << "Invalid material type. Use 'diffuse' or 'microfacet'.\n";
@@ -62,11 +67,11 @@ int main(int argc, char **argv)
     MeshTriangle left("../models/cornellbox/left.obj", red);
     MeshTriangle right("../models/cornellbox/right.obj", green);
     MeshTriangle light_("../models/cornellbox/light.obj", light);
-    Sphere sphere(Vector3f(278.0f, 150.0f, 250.0f), 80.0f, sphereMaterial);
+    Sphere sphere(Vector3f(380.0f, 100.0f, 200.0f), 80.0f, sphereMaterial);
 
     scene.Add(&floor);
-    // scene.Add(&shortbox);
-    // scene.Add(&tallbox);
+    scene.Add(&shortbox);
+    scene.Add(&tallbox);
     scene.Add(&left);
     scene.Add(&right);
     scene.Add(&light_);
@@ -77,7 +82,7 @@ int main(int argc, char **argv)
     Renderer r;
 
     auto start = std::chrono::system_clock::now();
-    r.Render(scene, spp);
+    r.Render(scene, spp, method);
     auto stop = std::chrono::system_clock::now();
 
     std::cout << "Render complete: \n";

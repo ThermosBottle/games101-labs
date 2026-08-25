@@ -2,13 +2,18 @@
 #include <chrono>
 #include <thread>
 #include <vector>
+#include <string>
 #include "Scene.hpp"
 #include "Renderer.hpp"
 
 inline float deg2rad(const float &deg) { return deg * M_PI / 180.0; }
-const float EPSILON = 0.00001;
+// Cornell-box coordinates are around 500 world units.  At that magnitude a
+// float has an ULP of roughly 3e-5, so 1e-5 is often rounded away when the
+// origin is offset from a triangle.  Shadow/secondary rays would then start
+// exactly on the wall and sporadically self-intersect, producing black dots.
+const float EPSILON = 1e-3f;
 
-void Renderer::Render(const Scene &scene, const int spp)
+void Renderer::Render(const Scene &scene, const int spp, const std::string &method)
 {
     std::vector<Vector3f> framebuffer(scene.width * scene.height);
     const float scale = tan(deg2rad(scene.fov * 0.5));
@@ -63,7 +68,14 @@ void Renderer::Render(const Scene &scene, const int spp)
         worker.join();
     UpdateProgress(1.f);
 
-    FILE *fp = fopen("microfacet_binary.ppm", "wb");
+    const std::string outputName =
+        "render-" + std::to_string(spp) + "-" + method + ".ppm";
+    FILE *fp = fopen(outputName.c_str(), "wb");
+    if (fp == nullptr)
+    {
+        std::cerr << "Failed to open output file: " << outputName << "\n";
+        return;
+    }
     (void)fprintf(fp, "P6\n%d %d\n255\n", scene.width, scene.height);
     for (auto i = 0; i < scene.height * scene.width; ++i)
     {

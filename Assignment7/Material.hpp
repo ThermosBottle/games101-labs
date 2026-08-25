@@ -200,11 +200,9 @@ Vector3f Material::sample(const Vector3f &wi, const Vector3f &N)
     switch (m_type)
     {
     case DIFFUSE:
-    case MICROFACET:
     {
-        // The assignment permits reusing the diffuse sampler for
-        // Microfacet. This is cosine-weighted sampling, so it remains
-        // simple and its PDF is shared by both material types.
+        // Diffuse materials continue to use cosine-weighted hemisphere
+        // sampling. Its PDF is kept in the DIFFUSE branch below.
         const float x_1 = get_random_float();
         const float x_2 = get_random_float();
         const float z = std::sqrt(1.0f - x_1);
@@ -214,6 +212,38 @@ Vector3f Material::sample(const Vector3f &wi, const Vector3f &N)
         return toWorld(localRay, N);
 
         break;
+    }
+    case MICROFACET:
+    {
+        // GGX importance sampling: sample the microfacet half-vector H
+        // instead of sampling the outgoing direction uniformly/cosine-wise.
+        // wi points from the previous ray origin toward the surface, so the
+        // conventional surface-to-view direction is V = -wi.
+        const Vector3f V = normalize(-wi);
+        const float NdotV = dotProduct(N, V);
+        if (NdotV <= 0.0f)
+            return Vector3f();
+
+        const float alpha = std::max(0.001f, roughness * roughness);
+        const float x_1 = get_random_float();
+        const float x_2 = get_random_float();
+        const float phi = 2.0f * M_PI * x_2;
+
+        // Invert the GGX NDF CDF to sample H in the local tangent frame.
+        const float tanTheta2 = alpha * alpha * x_1 /
+                                std::max(1.0f - x_1, 1e-7f);
+        const float cosTheta = 1.0f / std::sqrt(1.0f + tanTheta2);
+        const float sinTheta = std::sqrt(std::max(0.0f, 1.0f - cosTheta * cosTheta));
+        const Vector3f localH(
+            sinTheta * std::cos(phi),
+            sinTheta * std::sin(phi),
+            cosTheta);
+        const Vector3f H = normalize(toWorld(localH, N));
+
+        // Reflect the incident direction -V about H to obtain the outgoing
+        // direction. If H is sampled outside the visible reflection domain,
+        // the path has zero contribution and will be rejected by the caller.
+        return normalize(reflect(-V, H));
     }
     }
     // Keep unsupported future material types well-defined instead of
@@ -226,14 +256,27 @@ float Material::pdf(const Vector3f &wi, const Vector3f &wo, const Vector3f &N)
     switch (m_type)
     {
     case DIFFUSE:
-    case MICROFACET:
     {
-        // Both material types use cosine-weighted hemisphere sampling.
-        // The PDF must match sample(), even though Microfacet eval() is a
-        // Cook-Torrance BRDF rather than a Lambertian BRDF.
+        // PDF for the cosine-weighted diffuse sampler above.
         const float cosTheta = dotProduct(wo, N);
         return cosTheta > 0.0f ? cosTheta / M_PI : 0.0f;
         break;
+    }
+    case MICROFACET:
+    {
+        // The half-vector sampler has density D(H) * (N dot H). Mapping
+        // from H to wo introduces the Jacobian 1 / (4 * |V dot H|).
+        // This PDF must match sample() for the estimator to remain unbiased.
+        const Vector3f V = normalize(-wi);
+        const Vector3f L = normalize(wo);
+        const Vector3f H = normalize(V + L);
+        const float NdotH = dotProduct(N, H);
+        const float VdotH = std::fabs(dotProduct(V, H));
+        const float NdotL = dotProduct(N, L);
+        if (NdotH <= 0.0f || VdotH <= 1e-7f || NdotL <= 0.0f)
+            return 0.0f;
+
+        return distributionGGX(N, H) * NdotH / (4.0f * VdotH);
     }
     }
     return 0.0f;
@@ -280,13 +323,10 @@ Vector3f Material::eval(const Vector3f &wi, const Vector3f &wo, const Vector3f &
         // G is masking/shadowing, and F is Fresnel reflectance.
         const Vector3f specular = F * (D * G / denominator);
 
-        // A practical Microfacet material normally has both a diffuse base
-        // and a specular lobe. The previous implementation returned only
-        // specular, so the sphere was black except where a sampled light
-        // direction happened to fall inside the narrow highlight. Reduce the
-        // diffuse energy by (1 - F) to avoid counting the same reflected
-        // energy twice at grazing angles.
-        const Vector3f diffuse = Kd * (Vector3f(1.0f) - F) / M_PI;
+        // Add the diffuse base while avoiding double-counting reflected
+        // energy: energy that is reflected by the specular lobe is removed
+        // from the diffuse lobe using (1 - F).
+        const Vector3f diffuse = (Vector3f(1.0f) - F) * (Kd / M_PI);
         const Vector3f result = diffuse + specular;
         return (std::isfinite(result.x) && std::isfinite(result.y) &&
                 std::isfinite(result.z))

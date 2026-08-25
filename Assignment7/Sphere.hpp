@@ -12,6 +12,14 @@
 
 class Sphere : public Object{
 public:
+    // The Cornell Box scene is measured in world-space units where a very
+    // small positive sphere hit is a numerical self-intersection. Ignore
+    // such hits instead of allowing the ray to continue to the far root of
+    // the same sphere. This prevents black self-shadowing points on the
+    // sphere surface. The value is intentionally larger than EPSILON because
+    // the current float intersection calculation can leave a visible gap.
+    static constexpr float MIN_VALID_SPHERE_HIT = 0.5f;
+
     Vector3f center;
     float radius, radius2;
     Material *m;
@@ -32,10 +40,11 @@ public:
         // case: t1 is the far side of the same sphere and would incorrectly
         // shadow a visible light. A ray starting inside the sphere must use
         // t1, because t1 is its valid exit point.
-        if (!originInside && t0 <= ray.t_min + EPSILON)
+        if (!originInside && t0 <= MIN_VALID_SPHERE_HIT)
             return false;
         const float t = originInside ? t1 : t0;
-        return std::isfinite(t) && t >= ray.t_min && t <= ray.t_max;
+        return std::isfinite(t) && t > MIN_VALID_SPHERE_HIT &&
+               t >= ray.t_min && t <= ray.t_max;
     }
     bool intersect(const Ray& ray, float &tnear, uint32_t &index) const
     {
@@ -52,10 +61,11 @@ public:
         // Ignore a near self-hit from the sphere surface instead of falling
         // through to the far root. This keeps BVH/visibility queries from
         // treating the back side of the same sphere as an occluder.
-        if (!originInside && t0 <= ray.t_min + EPSILON)
+        if (!originInside && t0 <= MIN_VALID_SPHERE_HIT)
             return false;
         const float t = originInside ? t1 : t0;
-        if (!std::isfinite(t) || t < ray.t_min || t > ray.t_max)
+        if (!std::isfinite(t) || t <= MIN_VALID_SPHERE_HIT ||
+            t < ray.t_min || t > ray.t_max)
             return false;
         tnear = t;
 
@@ -77,10 +87,12 @@ public:
         // intersection, not a real blocker. Returning no hit is important:
         // selecting t1 here would incorrectly report the far side of the
         // sphere and make large parts of the sphere black.
-        if (!originInside && t0 <= ray.t_min + EPSILON)
+        if (!originInside && t0 <= MIN_VALID_SPHERE_HIT)
             return result;
         const float t = originInside ? t1 : t0;
-        if (t < ray.t_min || t > ray.t_max || !std::isfinite(t)) return result;
+        if (!std::isfinite(t) || t <= MIN_VALID_SPHERE_HIT ||
+            t < ray.t_min || t > ray.t_max)
+            return result;
         result.happened=true;
 
         result.coords = Vector3f(ray.origin + ray.direction * t);
@@ -94,8 +106,12 @@ public:
     void getSurfaceProperties(const Vector3f &P, const Vector3f &I, const uint32_t &index, const Vector2f &uv, Vector3f &N, Vector2f &st) const
     { N = normalize(P - center); }
 
-    Vector3f evalDiffuseColor(const Vector2f &st)const {
-        //return m->getColor();
+    Vector3f evalDiffuseColor(const Vector2f &) const
+    {
+        // Assignment7 stores the diffuse albedo in Material::Kd.  The
+        // current path tracer evaluates the BRDF directly, but Object still
+        // requires this legacy color-query method to be well-defined.
+        return m ? m->Kd : Vector3f(0.5f);
     }
     Bounds3 getBounds(){
         return Bounds3(Vector3f(center.x-radius, center.y-radius, center.z-radius),
