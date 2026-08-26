@@ -12,7 +12,7 @@ void Scene::buildBVH()
     emitters.clear();
     emitterAreaCdf.clear();
     totalEmitterArea = 0.0f;
-    for (Object* object : objects)
+    for (Object *object : objects)
     {
         if (object->hasEmit())
         {
@@ -74,7 +74,6 @@ Vector3f Scene::castRay(const Ray &ray, int depth,
                         float previousBsdfPdf,
                         bool previousWasBsdfSample) const
 {
-    // TODO Implement Path Tracing Algorithm here
     Vector3f L_dir(0, 0, 0);
     Intersection intersection = intersect(ray);
     if (!intersection.happened)
@@ -203,15 +202,17 @@ Vector3f Scene::castRay(const Ray &ray, int depth,
         cosIndirect > 0.0f && continuationProbability > 1e-7f)
     {
         const Vector3f indirect = castRay(
-                                       Ray(newOrig, wi), depth + 1,
-                                       hitPoint, pdf, true) *
-                                   intersection.m->eval(ray.direction, wi, N) *
-                                   cosIndirect / pdf / continuationProbability;
+                                      Ray(newOrig, wi), depth + 1,
+                                      hitPoint, pdf, true) *
+                                  intersection.m->eval(ray.direction, wi, N) *
+                                  cosIndirect / pdf / continuationProbability;
         if (std::isfinite(indirect.x) && std::isfinite(indirect.y) &&
             std::isfinite(indirect.z))
             L_indir += indirect;
     }
     const Vector3f result = L_dir + L_indir;
     return (std::isfinite(result.x) && std::isfinite(result.y) &&
-            std::isfinite(result.z)) ? result : Vector3f();
+            std::isfinite(result.z))
+               ? result
+               : Vector3f();
 }
