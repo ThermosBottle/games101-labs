@@ -432,9 +432,14 @@ __device__ void gatherPhotons(SPPMPixel &point, CudaPhotonKdTreeView tree,
             cudaDot(point.normal, photon.direction * -1.0f) > 0.0f)
         {
             const CudaMaterial &material = scene.materials[point.materialIndex];
+            // viewDirection is the camera-ray direction (surface -> camera is
+            // its negation).  The BSDF expects omega_o to point away from the
+            // surface, so use -viewDirection for the camera leg of the
+            // gathering estimator.
+            // photon.power is already flux: the incoming cosine belongs to
+            // the photon-path throughput and must not be applied again here.
             point.newFlux = point.newFlux + point.beta * photon.power *
-                evaluateBsdf(material, photon.direction, point.viewDirection, point.normal) *
-                fmaxf(0.0f, cudaDot(point.normal, photon.direction * -1.0f));
+                evaluateBsdf(material, photon.direction, point.viewDirection * -1.0f, point.normal);
             ++point.newPhotonCount;
         }
         const float split = kdCoordinate(point.position, node.axis) -
@@ -504,10 +509,14 @@ __global__ void sppmPhotonKernel(uint32_t count, uint32_t iteration, uint32_t ma
     { photons[index] = result; return; }
     const CudaVec3 direction = pathCosineSample(normal, rng);
     const float cosLight = fmaxf(0.0f, cudaDot(normal, direction));
-    // Le / (pA * pOmega * count) times the sampled cosine. For cosine
-    // hemisphere sampling pOmega=cosine/pi, so the cosine cancels and the
-    // photon power is Le*pi/(pA*count).
-    result.power = emission * (3.14159265f / fmaxf(1e-7f, pdfArea * count));
+    // Store the contribution of one sampled photon before the sample-count
+    // average.  The average over all photons emitted so far is applied once
+    // by sppmResolveKernel using the cumulative photon count.  Dividing here
+    // as well would make the resolve value smaller by another factor of
+    // `count`, which quantizes the framebuffer to black for normal images.
+    // For cosine hemisphere sampling pOmega=cosine/pi, so the sampled cosine
+    // cancels and the per-photon power is Le*pi/pA.
+    result.power = emission * (3.14159265f / fmaxf(1e-7f, pdfArea));
     CudaRay ray{point + normal * 1e-3f, direction, {}, 1e-3f, 1e30f};
     CudaVec3 beta{1,1,1};
     for (uint32_t depth = 0; depth < maxDepth; ++depth)
