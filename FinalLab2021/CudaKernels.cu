@@ -302,6 +302,10 @@ __global__ void pathTracingKernel(uint32_t width, uint32_t height, float fov,
                 weight = (cosLight > 0.0f && isfinite(lightPdf)) ? a / fmaxf(1e-7f, a + b) : 0.0f;
             }
             radiance = radiance + throughput * material.emission * weight;
+            // An area-light surface is an endpoint of the path.  Continuing
+            // through it would treat the emitter as a regular reflector and
+            // can create spurious dark/bright patches on later bounces.
+            break;
         }
 
         CudaVec3 normal = hit.normal;
@@ -468,6 +472,7 @@ __global__ void sppmCameraKernel(uint32_t width, uint32_t height, float fov,
     CudaVec3 beta{1, 1, 1};
     SPPMPixel &point = points[pixel];
     point.valid = 0;
+    ++point.cameraSampleCount;
     point.newFlux = {0, 0, 0};
     point.newPhotonCount = 0;
     for (uint32_t depth = 0; depth < maxDepth; ++depth)
@@ -476,9 +481,34 @@ __global__ void sppmCameraKernel(uint32_t width, uint32_t height, float fov,
                                           scene.bvh, scene.bvhCount);
         if (!hit.hit) return;
         const CudaMaterial &material = scene.materials[hit.materialIndex];
-        if (cudaLength2(material.emission) > 1e-12f) return;
+        if (cudaLength2(material.emission) > 1e-12f)
+        {
+            // A camera ray may hit the area light directly.  This contribution
+            // is independent of photon gathering and must not be discarded.
+            point.emitted = point.emitted + beta * material.emission;
+            return;
+        }
         CudaVec3 normal = hit.normal;
         if (cudaDot(normal, ray.direction) > 0) normal = normal * -1.0f;
+
+        // SPPM gathers at the first diffuse vertex.  Purely specular vertices
+        // are camera-path continuation vertices and must not terminate the
+        // path before the BSDF continuation below.
+        const bool diffuseVertex = material.type == 0u ||
+            cudaLength2(material.diffuse) > 1e-12f;
+        if (!diffuseVertex)
+        {
+            float pdf = 0.0f;
+            const CudaVec3 wi = sampleBsdf(material, ray.direction, normal, rng, pdf);
+            const float cosine = fmaxf(0.0f, cudaDot(normal, wi));
+            if (pdf <= 1e-7f || cosine <= 0.0f) return;
+            const float survival = depth >= 3 ? fminf(0.95f, fmaxf(0.05f, roulette)) : 1.0f;
+            if (pathRandom(rng) > survival) return;
+            beta = beta * evaluateBsdf(material, ray.direction, wi, normal) *
+                (cosine / (pdf * survival));
+            ray = {hit.position + normal * 1e-3f, wi, {}, 1e-3f, 1e30f};
+            continue;
+        }
         point.position = hit.position;
         point.normal = normal;
         point.viewDirection = ray.direction;
@@ -487,13 +517,6 @@ __global__ void sppmCameraKernel(uint32_t width, uint32_t height, float fov,
         if (point.radiusSquared <= 0.0f) point.radiusSquared = 2500.0f;
         point.valid = 1;
         return;
-        float pdf = 0; const CudaVec3 wi = sampleBsdf(material, ray.direction, normal, rng, pdf);
-        const float cosine = fmaxf(0.0f, cudaDot(normal, wi));
-        if (pdf <= 1e-7f || cosine <= 0) return;
-        float survival = depth >= 3 ? fminf(0.95f, fmaxf(0.05f, roulette)) : 1.0f;
-        if (pathRandom(rng) > survival) return;
-        beta = beta * evaluateBsdf(material, ray.direction, wi, normal) * (cosine / (pdf * survival));
-        ray = {hit.position + normal * 1e-3f, wi, {}, 1e-3f, 1e30f};
     }
 }
 
@@ -532,7 +555,9 @@ __global__ void sppmPhotonKernel(uint32_t count, uint32_t iteration, uint32_t ma
         result.direction = ray.direction;
         result.power = result.power * beta;
         result.valid = 1;
-        break;
+        // Deposit at the first diffuse vertex.  A purely specular material is
+        // a continuation vertex, so its code must remain reachable.
+        if (material.type == 0u || cudaLength2(material.diffuse) > 1e-12f) break;
         float pdf = 0; const CudaVec3 wi = sampleBsdf(material, ray.direction, n, rng, pdf);
         const float cosine = fmaxf(0.0f, cudaDot(n, wi));
         if (pdf <= 1e-7f || cosine <= 0) break;
@@ -554,7 +579,10 @@ __global__ void sppmUpdateKernel(SPPMPixel *points, uint32_t count, float alpha)
     SPPMPixel &p = points[i]; const float m = static_cast<float>(p.newPhotonCount);
     if (!p.valid) return;
     const float n = static_cast<float>(p.photonCount);
-    const float ratio = (n + alpha * m) / fmaxf(1.0f, n + m);
+    // With no photons yet, m == n == 0 must leave the initial radius intact;
+    // multiplying it by zero permanently disables this visible point.
+    const float ratio = (n + m > 0.0f) ?
+        (n + alpha * m) / (n + m) : 1.0f;
     p.radiusSquared *= ratio; p.tau = (p.tau + p.newFlux) * ratio;
     p.photonCount += p.newPhotonCount; p.newFlux = {0,0,0}; p.newPhotonCount = 0;
 }
@@ -564,7 +592,13 @@ __global__ void sppmResolveKernel(const SPPMPixel *points, uint32_t count,
 {
     const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; if (i >= count) return;
     const SPPMPixel &p = points[i];
-    framebuffer[i] = p.valid && photonCount > 0 ? p.tau / (3.14159265f * p.radiusSquared * photonCount) : CudaVec3{0,0,0};
+    const CudaVec3 direct = p.cameraSampleCount > 0
+        ? p.emitted / static_cast<float>(p.cameraSampleCount)
+        : CudaVec3{0, 0, 0};
+    const CudaVec3 gathered = p.valid && photonCount > 0
+        ? p.tau / (3.14159265f * p.radiusSquared * photonCount)
+        : CudaVec3{0, 0, 0};
+    framebuffer[i] = direct + gathered;
 }
 }
 
