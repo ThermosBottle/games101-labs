@@ -547,6 +547,11 @@ __global__ void sppmCameraKernel(uint32_t width, uint32_t height, float fov,
     const uint32_t y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
     const uint32_t pixel = y * width + x;
+    // The camera path must remain statistically varying: with a fixed seed,
+    // the single sampled Fresnel branch at the glass sphere is frozen for the
+    // whole render and appears as coloured pixel noise over the sphere.  The
+    // visible point is persistent, so a failed path below deliberately leaves
+    // the previous point intact instead of invalidating its accumulated tau.
     unsigned int rng = pathHash(pixel ^ (iteration * 0x9e3779b9u));
     const float scale = tanf(fov * 0.5f * 0.01745329252f);
     const float aspect = static_cast<float>(width) / height;
@@ -555,7 +560,6 @@ __global__ void sppmCameraKernel(uint32_t width, uint32_t height, float fov,
     CudaRay ray{eye, cudaNormalize(CudaVec3{-sx, sy, 1.0f}), {}, 1e-3f, 1e30f};
     CudaVec3 beta{1, 1, 1};
     SPPMPixel &point = points[pixel];
-    point.valid = 0;
     ++point.cameraSampleCount;
     point.newFlux = {0, 0, 0};
     point.newPhotonCount = 0;

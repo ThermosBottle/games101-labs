@@ -98,8 +98,13 @@ int main(int argc, char **argv)
         MeshTriangle right(root + "right.obj", green);
         MeshTriangle lightMesh(root + "light.obj", light);
         Sphere sphere(Vector3f(380.0f, 100.0f, 200.0f), 80.0f, sphereMaterial);
-        scene.Add(&floor); scene.Add(&shortbox); scene.Add(&tallbox);
-        scene.Add(&left); scene.Add(&right); scene.Add(&lightMesh); scene.Add(&sphere);
+        scene.Add(&floor);
+        scene.Add(&shortbox);
+        scene.Add(&tallbox);
+        scene.Add(&left);
+        scene.Add(&right);
+        scene.Add(&lightMesh);
+        scene.Add(&sphere);
         scene.buildBVH();
 
         CudaScene cudaScene;
