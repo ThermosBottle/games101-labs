@@ -97,9 +97,70 @@ __device__ CudaVec3 schlickFresnel(CudaVec3 ks, float cosTheta)
     return ks + (CudaVec3{1.0f, 1.0f, 1.0f} - ks) * f;
 }
 
+__device__ float dielectricFresnel(float cosi, float etai, float etat,
+                                   bool &totalInternalReflection)
+{
+    cosi = fminf(1.0f, fmaxf(0.0f, cosi));
+    const float sint = etai / etat * sqrtf(fmaxf(0.0f, 1.0f - cosi * cosi));
+    if (sint >= 1.0f) { totalInternalReflection = true; return 1.0f; }
+    totalInternalReflection = false;
+    const float cost = sqrtf(fmaxf(0.0f, 1.0f - sint * sint));
+    const float rs = (etat * cosi - etai * cost) / fmaxf(1e-7f, etat * cosi + etai * cost);
+    const float rp = (etai * cosi - etat * cost) / fmaxf(1e-7f, etai * cosi + etat * cost);
+    return fminf(1.0f, fmaxf(0.0f, 0.5f * (rs * rs + rp * rp)));
+}
+
+__device__ CudaBsdfSample invalidBsdfSample()
+{ return {{0,0,0}, {0,0,0}, 0, 1, 0, 0, 0}; }
+
+__device__ CudaBsdfSample sampleDeltaBsdf(const CudaMaterial &m, CudaVec3 incoming,
+                                          CudaVec3 n, bool entering, unsigned int &state)
+{
+    CudaBsdfSample result = invalidBsdfSample();
+    const CudaVec3 incident = cudaNormalize(incoming);
+    const float cosi = fminf(1.0f, fmaxf(0.0f, -cudaDot(incident, n)));
+    if (cosi <= 0.0f) return result;
+    if (m.type == CudaMirror)
+    {
+        result.direction = cudaNormalize(incident - n * (2.0f * cudaDot(incident, n)));
+        result.weight = m.specular;
+        result.isDelta = result.valid = 1;
+        return result;
+    }
+
+    const float materialIor = fmaxf(1.0001f, m.ior);
+    const float etai = entering ? 1.0f : materialIor;
+    const float etat = entering ? materialIor : 1.0f;
+    const CudaVec3 orientedNormal = entering ? n : n * -1.0f;
+    bool tir = false;
+    const float kr = dielectricFresnel(cosi, etai, etat, tir);
+    const bool reflect = tir || pathRandom(state) < kr;
+    if (reflect)
+    {
+        result.direction = cudaNormalize(incident - n * (2.0f * cudaDot(incident, n)));
+        // The Fresnel factor cancels the branch probability for reflection:
+        // Fr / Pr = 1.  TIR is the deterministic special case.
+        result.weight = {1,1,1};
+        result.isDelta = result.valid = 1;
+        return result;
+    }
+    const float eta = etai / etat;
+    const float cos2 = fmaxf(0.0f, 1.0f - eta * eta * (1.0f - cosi * cosi));
+    result.direction = cudaNormalize(incident * eta + orientedNormal * (eta * cosi - sqrtf(cos2)));
+    // Radiance transport across a specular interface requires the eta^2
+    // factor; it is not represented by a fabricated directional PDF.
+    const float branchProbability = fmaxf(1e-7f, 1.0f - kr);
+    const float transmissionWeight = eta * eta / branchProbability;
+    result.weight = {transmissionWeight, transmissionWeight, transmissionWeight};
+    result.eta = eta;
+    result.isDelta = result.isTransmission = result.valid = 1;
+    return result;
+}
+
 __device__ CudaVec3 evaluateBsdf(const CudaMaterial &m, CudaVec3 incoming,
                                 CudaVec3 outgoing, CudaVec3 n)
 {
+    if (m.type == CudaMirror || m.type == CudaGlass) return {0.0f, 0.0f, 0.0f};
     const CudaVec3 v = cudaNormalize(incoming * -1.0f);
     const CudaVec3 l = cudaNormalize(outgoing);
     const float ndotv = fmaxf(0.0f, cudaDot(n, v));
@@ -144,6 +205,7 @@ __device__ float ggxPdf(const CudaMaterial &m, CudaVec3 incoming,
 __device__ float evaluateBsdfPdf(const CudaMaterial &m, CudaVec3 incoming,
                                   CudaVec3 outgoing, CudaVec3 n)
 {
+    if (m.type == CudaMirror || m.type == CudaGlass) return 0.0f;
     const CudaVec3 v = cudaNormalize(incoming * -1.0f);
     const CudaVec3 l = cudaNormalize(outgoing);
     const float ndotl = cudaDot(n, l);
@@ -156,18 +218,22 @@ __device__ float evaluateBsdfPdf(const CudaMaterial &m, CudaVec3 incoming,
     return (1.0f - pSpecular) * diffusePdf + pSpecular * specularPdf;
 }
 
-__device__ CudaVec3 sampleBsdf(const CudaMaterial &m, CudaVec3 incoming,
-                               CudaVec3 n, unsigned int &state, float &pdf)
+__device__ CudaBsdfSample sampleBsdf(const CudaMaterial &m, CudaVec3 incoming,
+                                     CudaVec3 n, bool entering, unsigned int &state)
 {
-    if (m.type == 0u)
+    if (m.type == CudaMirror || m.type == CudaGlass)
+        return sampleDeltaBsdf(m, incoming, n, entering, state);
+    CudaBsdfSample result = invalidBsdfSample();
+    if (m.type == CudaDiffuse)
     {
-        CudaVec3 direction = pathCosineSample(n, state);
-        pdf = fmaxf(0.0f, cudaDot(n, direction)) / 3.14159265f;
-        return direction;
+        result.direction = pathCosineSample(n, state);
+        result.pdf = fmaxf(0.0f, cudaDot(n, result.direction)) / 3.14159265f;
+        result.valid = 1;
+        return result;
     }
 
     const CudaVec3 v = cudaNormalize(incoming * -1.0f);
-    if (cudaDot(n, v) <= 0.0f) { pdf = 0.0f; return {0.0f, 0.0f, 0.0f}; }
+    if (cudaDot(n, v) <= 0.0f) return result;
 
     const float pSpecular = microfacetSpecularProbability(m);
     CudaVec3 direction;
@@ -194,8 +260,16 @@ __device__ CudaVec3 sampleBsdf(const CudaMaterial &m, CudaVec3 incoming,
 
     // Both branches use this same mixture PDF, including the probability of
     // selecting the branch that generated direction.
-    pdf = evaluateBsdfPdf(m, incoming, direction, n);
-    return direction;
+    result.direction = direction;
+    result.pdf = evaluateBsdfPdf(m, incoming, direction, n);
+    result.valid = result.pdf > 1e-7f;
+    return result;
+}
+
+__device__ bool hasDiffuseLobe(const CudaMaterial &m)
+{
+    return m.type == CudaDiffuse ||
+           (m.type == CudaMicrofacet && cudaLength2(m.diffuse) > 1e-12f);
 }
 
 __device__ float primitiveArea(const CudaPrimitive &p, const CudaTriangle *triangles,
@@ -308,6 +382,7 @@ __global__ void pathTracingKernel(uint32_t width, uint32_t height, float fov,
             break;
         }
 
+        const bool entering = cudaDot(ray.direction, hit.normal) < 0.0f;
         CudaVec3 normal = hit.normal;
         if (cudaDot(normal, ray.direction) > 0.0f) normal = normal * -1.0f;
 
@@ -355,16 +430,25 @@ __global__ void pathTracingKernel(uint32_t width, uint32_t height, float fov,
             continuation = fminf(0.95f, fmaxf(0.05f, roulette));
             if (pathRandom(rng) > continuation) break;
         }
-        float pdf = 0.0f;
-        const CudaVec3 wi = sampleBsdf(material, ray.direction, normal, rng, pdf);
-        const float cosine = fmaxf(0.0f, cudaDot(normal, wi));
-        if (cosine <= 0.0f || pdf <= 1e-7f) break;
-        const CudaVec3 bsdf = evaluateBsdf(material, ray.direction, wi, normal);
-        throughput = throughput * bsdf * (cosine / (pdf * continuation));
+        const CudaBsdfSample sample = sampleBsdf(material, ray.direction, normal, entering, rng);
+        if (!sample.valid) break;
+        if (sample.isDelta)
+        {
+            throughput = throughput * sample.weight / continuation;
+            previousWasBsdfSample = false; // delta events have no MIS PDF
+        }
+        else
+        {
+            const float cosine = fmaxf(0.0f, cudaDot(normal, sample.direction));
+            if (cosine <= 0.0f || sample.pdf <= 1e-7f) break;
+            throughput = throughput * evaluateBsdf(material, ray.direction, sample.direction, normal) *
+                         (cosine / (sample.pdf * continuation));
+            previousBsdfPdf = sample.pdf;
+            previousWasBsdfSample = true;
+        }
         previousPoint = hit.position;
-        previousBsdfPdf = pdf;
-        previousWasBsdfSample = true;
-        ray = {hit.position + normal * 1e-3f, wi, {}, 1e-3f, 1e30f};
+        const float offsetSign = cudaDot(sample.direction, normal) >= 0.0f ? 1.0f : -1.0f;
+        ray = {hit.position + normal * (offsetSign * 1e-3f), sample.direction, {}, 1e-3f, 1e30f};
     }
     framebuffer[pixel] = framebuffer[pixel] + radiance;
 }
@@ -488,25 +572,31 @@ __global__ void sppmCameraKernel(uint32_t width, uint32_t height, float fov,
             point.emitted = point.emitted + beta * material.emission;
             return;
         }
+        const bool entering = cudaDot(ray.direction, hit.normal) < 0.0f;
         CudaVec3 normal = hit.normal;
         if (cudaDot(normal, ray.direction) > 0) normal = normal * -1.0f;
 
         // SPPM gathers at the first diffuse vertex.  Purely specular vertices
         // are camera-path continuation vertices and must not terminate the
         // path before the BSDF continuation below.
-        const bool diffuseVertex = material.type == 0u ||
-            cudaLength2(material.diffuse) > 1e-12f;
+        const bool diffuseVertex = hasDiffuseLobe(material);
         if (!diffuseVertex)
         {
-            float pdf = 0.0f;
-            const CudaVec3 wi = sampleBsdf(material, ray.direction, normal, rng, pdf);
-            const float cosine = fmaxf(0.0f, cudaDot(normal, wi));
-            if (pdf <= 1e-7f || cosine <= 0.0f) return;
+            const CudaBsdfSample sample = sampleBsdf(material, ray.direction, normal, entering, rng);
+            if (!sample.valid) return;
             const float survival = depth >= 3 ? fminf(0.95f, fmaxf(0.05f, roulette)) : 1.0f;
             if (pathRandom(rng) > survival) return;
-            beta = beta * evaluateBsdf(material, ray.direction, wi, normal) *
-                (cosine / (pdf * survival));
-            ray = {hit.position + normal * 1e-3f, wi, {}, 1e-3f, 1e30f};
+            if (sample.isDelta)
+                beta = beta * sample.weight / survival;
+            else
+            {
+                const float cosine = fmaxf(0.0f, cudaDot(normal, sample.direction));
+                if (cosine <= 0.0f || sample.pdf <= 1e-7f) return;
+                beta = beta * evaluateBsdf(material, ray.direction, sample.direction, normal) *
+                    (cosine / (sample.pdf * survival));
+            }
+            const float offsetSign = cudaDot(sample.direction, normal) >= 0.0f ? 1.0f : -1.0f;
+            ray = {hit.position + normal * (offsetSign * 1e-3f), sample.direction, {}, 1e-3f, 1e30f};
             continue;
         }
         point.position = hit.position;
@@ -553,8 +643,7 @@ __global__ void sppmPhotonKernel(uint32_t count, uint32_t iteration, uint32_t ma
         if (cudaLength2(material.emission) > 1e-12f) break;
         CudaVec3 n = hit.normal;
         if (cudaDot(n, ray.direction) > 0) n = n * -1.0f;
-        const bool diffuseVertex = material.type == 0u ||
-            cudaLength2(material.diffuse) > 1e-12f;
+        const bool diffuseVertex = hasDiffuseLobe(material);
         if (diffuseVertex)
         {
             // Record every diffuse vertex, not only the last hit on the path.
@@ -567,13 +656,22 @@ __global__ void sppmPhotonKernel(uint32_t count, uint32_t iteration, uint32_t ma
             result.power = pathPower * beta;
             result.valid = 1;
         }
-        float pdf = 0; const CudaVec3 wi = sampleBsdf(material, ray.direction, n, rng, pdf);
-        const float cosine = fmaxf(0.0f, cudaDot(n, wi));
-        if (pdf <= 1e-7f || cosine <= 0) break;
+        const bool entering = cudaDot(ray.direction, hit.normal) < 0.0f;
+        const CudaBsdfSample sample = sampleBsdf(material, ray.direction, n, entering, rng);
+        if (!sample.valid) break;
         const float survival = depth >= 3 ? fminf(0.95f, fmaxf(0.05f, roulette)) : 1.0f;
         if (pathRandom(rng) > survival) break;
-        beta = beta * evaluateBsdf(material, ray.direction, wi, n) * (cosine / (pdf * survival));
-        ray = {hit.position + n * 1e-3f, wi, {}, 1e-3f, 1e30f};
+        if (sample.isDelta)
+            beta = beta * sample.weight / survival;
+        else
+        {
+            const float cosine = fmaxf(0.0f, cudaDot(n, sample.direction));
+            if (sample.pdf <= 1e-7f || cosine <= 0) break;
+            beta = beta * evaluateBsdf(material, ray.direction, sample.direction, n) *
+                   (cosine / (sample.pdf * survival));
+        }
+        const float offsetSign = cudaDot(sample.direction, n) >= 0.0f ? 1.0f : -1.0f;
+        ray = {hit.position + n * (offsetSign * 1e-3f), sample.direction, {}, 1e-3f, 1e30f};
     }
 }
 

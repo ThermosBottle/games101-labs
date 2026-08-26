@@ -10,7 +10,9 @@
 enum MaterialType
 {
     DIFFUSE,
-    MICROFACET
+    MICROFACET,
+    MIRROR,
+    GLASS
 };
 
 class Material

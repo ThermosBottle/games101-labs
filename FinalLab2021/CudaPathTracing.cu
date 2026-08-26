@@ -47,7 +47,8 @@ int main(int argc, char **argv)
     const std::string mode = argc > 5 ? argv[5] : "diffuse";
     const std::string renderMode = argc > 6 ? argv[6] : "mis";
     const std::string output = argc > 7 ? argv[7] :
-        "render-cuda-" + mode + "-" + renderMode + "-" + std::to_string(iterations) + ".ppm";
+        "render-cuda-glass-mirror-" + renderMode + "-" +
+        std::to_string(iterations) + ".ppm";
     if (mode != "diffuse" && mode != "microfacet")
     {
         std::cerr << "Invalid mode. Use 'diffuse' or 'microfacet'.\n";
@@ -75,10 +76,16 @@ int main(int argc, char **argv)
             0.737f + 0.159f, 0.737f);
         Material *light = new Material(materialType, emission);
         light->Kd = Vector3f(0.65f);
-        Material *sphereMaterial = new Material(materialType, Vector3f(0.0f));
-        sphereMaterial->Kd = Vector3f(0.5f);
-        sphereMaterial->Ks = Vector3f(0.04f);
-        sphereMaterial->roughness = 0.25f;
+        // The sphere is an ideal dielectric: CUDA handles its Fresnel
+        // reflection/refraction branches and total internal reflection.
+        Material *sphereMaterial = new Material(GLASS, Vector3f(0.0f));
+        sphereMaterial->Ks = Vector3f(1.0f);
+        sphereMaterial->ior = 1.5f;
+
+        // The left box is an ideal mirror.  Its colour is the multiplicative
+        // reflection weight used by the CUDA delta-event sampler.
+        Material *mirrorMaterial = new Material(MIRROR, Vector3f(0.0f));
+        mirrorMaterial->Ks = Vector3f(0.95f);
 
         // Paths are relative to the project root, which is also where the
         // supplied models directory lives.  Run this executable from there.
@@ -86,7 +93,7 @@ int main(int argc, char **argv)
             ? "models/cornellbox/" : "../models/cornellbox/";
         MeshTriangle floor(root + "floor.obj", white);
         MeshTriangle shortbox(root + "shortbox.obj", white);
-        MeshTriangle tallbox(root + "tallbox.obj", white);
+        MeshTriangle tallbox(root + "tallbox.obj", mirrorMaterial);
         MeshTriangle left(root + "left.obj", red);
         MeshTriangle right(root + "right.obj", green);
         MeshTriangle lightMesh(root + "light.obj", light);

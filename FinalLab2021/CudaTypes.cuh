@@ -26,6 +26,17 @@ enum class CudaPrimitiveType : uint32_t
     Sphere = 1
 };
 
+// Keep these values in sync with MaterialType.  The explicit event type is
+// important: a zero diffuse colour is not a reliable indication of whether a
+// surface can be used by the density estimator.
+enum CudaMaterialType : uint32_t
+{
+    CudaDiffuse = 0,
+    CudaMicrofacet = 1,
+    CudaMirror = 2,
+    CudaGlass = 3
+};
+
 struct CudaMaterial
 {
     uint32_t type;
@@ -34,6 +45,17 @@ struct CudaMaterial
     CudaVec3 specular;
     float roughness;
     float ior;
+};
+
+struct CudaBsdfSample
+{
+    CudaVec3 direction;
+    CudaVec3 weight;       // multiplier for path throughput
+    float pdf;             // solid-angle PDF; zero for delta events
+    float eta;             // eta_i / eta_t for transmission, otherwise 1
+    uint32_t isDelta;
+    uint32_t isTransmission;
+    uint32_t valid;
 };
 
 struct CudaTriangle
