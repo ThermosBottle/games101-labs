@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include "CudaTypes.cuh"
+#include "CudaPhotonMap.cuh"
 
 struct CudaValidationStats
 {
@@ -54,3 +55,17 @@ void launchCudaPathTracing(uint32_t width, uint32_t height, float fov,
 void launchCudaSceneSmokeKernel(const CudaPrimitive *devicePrimitives,
                                 uint32_t primitiveCount,
                                 uint32_t *deviceCounter);
+
+void launchCudaSppmCamera(uint32_t width, uint32_t height, float fov,
+                          CudaVec3 eye, uint32_t iteration, uint32_t maxDepth,
+                          float roulette, CudaSceneView scene,
+                          SPPMPixel *visiblePoints);
+void launchCudaSppmPhotons(uint32_t photonCount, uint32_t iteration,
+                           uint32_t maxDepth, float roulette,
+                           CudaSceneView scene, std::vector<Photon> &photons);
+void launchCudaSppmGather(SPPMPixel *visiblePoints, uint32_t count,
+                          CudaPhotonKdTreeView photons, CudaSceneView scene);
+void launchCudaSppmUpdate(SPPMPixel *visiblePoints, uint32_t count,
+                          float alpha);
+void launchCudaSppmResolve(const SPPMPixel *visiblePoints, uint32_t count,
+                           uint32_t emittedPhotonCount, CudaVec3 *framebuffer);

@@ -31,6 +31,13 @@ public:
     uint32_t triangleCount() const { return static_cast<uint32_t>(hostTriangles.size()); }
     uint32_t sphereCount() const { return static_cast<uint32_t>(hostSpheres.size()); }
     float totalEmitterArea() const;
+    CudaSceneView deviceView() const
+    {
+        return {dTriangles, triangleCount(), dSpheres, sphereCount(),
+                dPrimitives, primitiveCount(), dBvh,
+                static_cast<uint32_t>(hostBvh.size()), dMaterials,
+                totalEmitterArea()};
+    }
     const CudaPrimitive *devicePrimitives() const { return dPrimitives; }
     const CudaTriangle *deviceTriangles() const { return dTriangles; }
     const CudaSphere *deviceSpheres() const { return dSpheres; }

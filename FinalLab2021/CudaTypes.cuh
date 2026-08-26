@@ -85,3 +85,19 @@ struct CudaHit
     float barycentricV;
     uint32_t hit;
 };
+
+// A compact, non-owning view of the scene. It is passed by value to kernels
+// so the launch interface does not have to repeat every device pointer.
+struct CudaSceneView
+{
+    const CudaTriangle *triangles;
+    uint32_t triangleCount;
+    const CudaSphere *spheres;
+    uint32_t sphereCount;
+    const CudaPrimitive *primitives;
+    uint32_t primitiveCount;
+    const CudaBvhNode *bvh;
+    uint32_t bvhCount;
+    const CudaMaterial *materials;
+    float totalEmitterArea;
+};

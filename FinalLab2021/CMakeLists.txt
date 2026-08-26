@@ -18,5 +18,5 @@ set_target_properties(CudaValidation PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 
 add_executable(CudaPathTracing CudaPathTracing.cu CudaScene.cpp CudaScene.cu
         CudaKernels.cu Scene.cpp BVH.cpp Vector.cpp
-        CudaTypes.cuh CudaMath.cuh CudaKernels.cuh CudaScene.hpp)
+        CudaTypes.cuh CudaMath.cuh CudaKernels.cuh CudaScene.hpp CudaPhotonMap.cuh CudaPhotonMap.cu)
 set_target_properties(CudaPathTracing PROPERTIES CUDA_SEPARABLE_COMPILATION ON)

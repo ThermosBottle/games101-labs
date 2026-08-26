@@ -412,3 +412,172 @@ void launchCudaDiffuseBounce(const CudaRay *rays, uint32_t width, uint32_t heigh
     (void)triangleCount; (void)sphereCount;
     uint32_t count=width*height; if(count) diffuseKernel<<<(count+127)/128,128>>>(rays,count,triangles,spheres,primitives,primitiveCount,bvh,bvhCount,materials,lightPosition,lightEmission,background,sampleIndex,framebuffer);
 }
+
+namespace
+{
+__device__ float kdCoordinate(CudaVec3 p, uint32_t axis)
+{ return axis == 0 ? p.x : axis == 1 ? p.y : p.z; }
+
+__device__ void gatherPhotons(SPPMPixel &point, CudaPhotonKdTreeView tree,
+                              CudaSceneView scene)
+{
+    if (!point.valid || !tree.nodes || tree.nodeCount == 0) return;
+    uint32_t stack[64]; uint32_t top = 0; stack[top++] = 0;
+    while (top)
+    {
+        const CudaPhotonKdNode node = tree.nodes[stack[--top]];
+        const Photon photon = tree.photons[node.photonIndex];
+        const CudaVec3 delta = photon.position - point.position;
+        if (photon.valid && cudaLength2(delta) <= point.radiusSquared &&
+            cudaDot(point.normal, photon.direction * -1.0f) > 0.0f)
+        {
+            const CudaMaterial &material = scene.materials[point.materialIndex];
+            point.newFlux = point.newFlux + point.beta * photon.power *
+                evaluateBsdf(material, photon.direction, point.viewDirection, point.normal) *
+                fmaxf(0.0f, cudaDot(point.normal, photon.direction * -1.0f));
+            ++point.newPhotonCount;
+        }
+        const float split = kdCoordinate(point.position, node.axis) -
+                            kdCoordinate(photon.position, node.axis);
+        if (node.leftChild != UINT32_MAX && (split <= 0 || split * split <= point.radiusSquared) && top < 64)
+            stack[top++] = node.leftChild;
+        if (node.rightChild != UINT32_MAX && (split >= 0 || split * split <= point.radiusSquared) && top < 64)
+            stack[top++] = node.rightChild;
+    }
+}
+
+__global__ void sppmCameraKernel(uint32_t width, uint32_t height, float fov,
+                                 CudaVec3 eye, uint32_t iteration, uint32_t maxDepth,
+                                 float roulette, CudaSceneView scene, SPPMPixel *points)
+{
+    const uint32_t x = blockIdx.x * blockDim.x + threadIdx.x;
+    const uint32_t y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+    const uint32_t pixel = y * width + x;
+    unsigned int rng = pathHash(pixel ^ (iteration * 0x9e3779b9u));
+    const float scale = tanf(fov * 0.5f * 0.01745329252f);
+    const float aspect = static_cast<float>(width) / height;
+    const float sx = (2.0f * (x + pathRandom(rng)) / width - 1.0f) * aspect * scale;
+    const float sy = (1.0f - 2.0f * (y + pathRandom(rng)) / height) * scale;
+    CudaRay ray{eye, cudaNormalize(CudaVec3{-sx, sy, 1.0f}), {}, 1e-3f, 1e30f};
+    CudaVec3 beta{1, 1, 1};
+    SPPMPixel &point = points[pixel];
+    point.valid = 0;
+    point.newFlux = {0, 0, 0};
+    point.newPhotonCount = 0;
+    for (uint32_t depth = 0; depth < maxDepth; ++depth)
+    {
+        const CudaHit hit = intersectBvh(ray, scene.triangles, scene.spheres, scene.primitives,
+                                          scene.bvh, scene.bvhCount);
+        if (!hit.hit) return;
+        const CudaMaterial &material = scene.materials[hit.materialIndex];
+        if (cudaLength2(material.emission) > 1e-12f) return;
+        CudaVec3 normal = hit.normal;
+        if (cudaDot(normal, ray.direction) > 0) normal = normal * -1.0f;
+        point.position = hit.position;
+        point.normal = normal;
+        point.viewDirection = ray.direction;
+        point.beta = beta;
+        point.materialIndex = hit.materialIndex;
+        if (point.radiusSquared <= 0.0f) point.radiusSquared = 2500.0f;
+        point.valid = 1;
+        return;
+        float pdf = 0; const CudaVec3 wi = sampleBsdf(material, ray.direction, normal, rng, pdf);
+        const float cosine = fmaxf(0.0f, cudaDot(normal, wi));
+        if (pdf <= 1e-7f || cosine <= 0) return;
+        float survival = depth >= 3 ? fminf(0.95f, fmaxf(0.05f, roulette)) : 1.0f;
+        if (pathRandom(rng) > survival) return;
+        beta = beta * evaluateBsdf(material, ray.direction, wi, normal) * (cosine / (pdf * survival));
+        ray = {hit.position + normal * 1e-3f, wi, {}, 1e-3f, 1e30f};
+    }
+}
+
+__global__ void sppmPhotonKernel(uint32_t count, uint32_t iteration, uint32_t maxDepth,
+                                  float roulette, CudaSceneView scene, Photon *photons)
+{
+    const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count) return;
+    Photon result{}; unsigned int rng = pathHash(index ^ (iteration * 0x51ed270bu));
+    CudaVec3 point, normal, emission; float pdfArea;
+    if (!sampleEmitter(scene.triangles, scene.spheres, scene.primitives, scene.primitiveCount,
+                       scene.materials, scene.totalEmitterArea, rng, point, normal, emission, pdfArea))
+    { photons[index] = result; return; }
+    const CudaVec3 direction = pathCosineSample(normal, rng);
+    const float cosLight = fmaxf(0.0f, cudaDot(normal, direction));
+    // Le / (pA * pOmega * count) times the sampled cosine. For cosine
+    // hemisphere sampling pOmega=cosine/pi, so the cosine cancels and the
+    // photon power is Le*pi/(pA*count).
+    result.power = emission * (3.14159265f / fmaxf(1e-7f, pdfArea * count));
+    CudaRay ray{point + normal * 1e-3f, direction, {}, 1e-3f, 1e30f};
+    CudaVec3 beta{1,1,1};
+    for (uint32_t depth = 0; depth < maxDepth; ++depth)
+    {
+        const CudaHit hit = intersectBvh(ray, scene.triangles, scene.spheres, scene.primitives,
+                                          scene.bvh, scene.bvhCount);
+        if (!hit.hit) break;
+        const CudaMaterial &material = scene.materials[hit.materialIndex];
+        if (cudaLength2(material.emission) > 1e-12f) break;
+        CudaVec3 n = hit.normal;
+        if (cudaDot(n, ray.direction) > 0) n = n * -1.0f;
+        result.position = hit.position;
+        result.direction = ray.direction;
+        result.power = result.power * beta;
+        result.valid = 1;
+        break;
+        float pdf = 0; const CudaVec3 wi = sampleBsdf(material, ray.direction, n, rng, pdf);
+        const float cosine = fmaxf(0.0f, cudaDot(n, wi));
+        if (pdf <= 1e-7f || cosine <= 0) break;
+        const float survival = depth >= 3 ? fminf(0.95f, fmaxf(0.05f, roulette)) : 1.0f;
+        if (pathRandom(rng) > survival) break;
+        beta = beta * evaluateBsdf(material, ray.direction, wi, n) * (cosine / (pdf * survival));
+        ray = {hit.position + n * 1e-3f, wi, {}, 1e-3f, 1e30f};
+    }
+    photons[index] = result;
+}
+
+__global__ void sppmGatherKernel(SPPMPixel *points, uint32_t count,
+                                 CudaPhotonKdTreeView photons, CudaSceneView scene)
+{ const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; if (i < count) gatherPhotons(points[i], photons, scene); }
+
+__global__ void sppmUpdateKernel(SPPMPixel *points, uint32_t count, float alpha)
+{
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; if (i >= count) return;
+    SPPMPixel &p = points[i]; const float m = static_cast<float>(p.newPhotonCount);
+    if (!p.valid) return;
+    const float n = static_cast<float>(p.photonCount);
+    const float ratio = (n + alpha * m) / fmaxf(1.0f, n + m);
+    p.radiusSquared *= ratio; p.tau = (p.tau + p.newFlux) * ratio;
+    p.photonCount += p.newPhotonCount; p.newFlux = {0,0,0}; p.newPhotonCount = 0;
+}
+
+__global__ void sppmResolveKernel(const SPPMPixel *points, uint32_t count,
+                                  uint32_t photonCount, CudaVec3 *framebuffer)
+{
+    const uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; if (i >= count) return;
+    const SPPMPixel &p = points[i];
+    framebuffer[i] = p.valid && photonCount > 0 ? p.tau / (3.14159265f * p.radiusSquared * photonCount) : CudaVec3{0,0,0};
+}
+}
+
+void launchCudaSppmCamera(uint32_t w, uint32_t h, float fov, CudaVec3 eye, uint32_t iteration,
+                          uint32_t depth, float roulette, CudaSceneView scene, SPPMPixel *points)
+{ sppmCameraKernel<<<dim3((w+7)/8,(h+7)/8),dim3(8,8)>>>(w,h,fov,eye,iteration,depth,roulette,scene,points); cudaDeviceSynchronize(); }
+
+void launchCudaSppmPhotons(uint32_t count, uint32_t iteration, uint32_t depth, float roulette,
+                           CudaSceneView scene, std::vector<Photon> &photons)
+{
+    Photon *device = nullptr; photons.clear();
+    if (!count) return;
+    cudaMalloc(reinterpret_cast<void **>(&device), count * sizeof(Photon));
+    sppmPhotonKernel<<<(count+127)/128,128>>>(count,iteration,depth,roulette,scene,device);
+    cudaDeviceSynchronize(); std::vector<Photon> all(count);
+    cudaMemcpy(all.data(), device, count*sizeof(Photon), cudaMemcpyDeviceToHost); cudaFree(device);
+    for (const Photon &p : all) if (p.valid) photons.push_back(p);
+}
+
+void launchCudaSppmGather(SPPMPixel *points, uint32_t count, CudaPhotonKdTreeView photons, CudaSceneView scene)
+{ if (count) sppmGatherKernel<<<(count+127)/128,128>>>(points,count,photons,scene); cudaDeviceSynchronize(); }
+void launchCudaSppmUpdate(SPPMPixel *points, uint32_t count, float alpha)
+{ if (count) sppmUpdateKernel<<<(count+127)/128,128>>>(points,count,alpha); cudaDeviceSynchronize(); }
+void launchCudaSppmResolve(const SPPMPixel *points, uint32_t count, uint32_t photons, CudaVec3 *framebuffer)
+{ if (count) sppmResolveKernel<<<(count+127)/128,128>>>(points,count,photons,framebuffer); cudaDeviceSynchronize(); }
