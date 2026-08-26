@@ -525,13 +525,15 @@ __global__ void sppmPhotonKernel(uint32_t count, uint32_t iteration, uint32_t ma
 {
     const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= count) return;
-    Photon result{}; unsigned int rng = pathHash(index ^ (iteration * 0x51ed270bu));
+    // A path can contribute a photon at every surface vertex.  The host
+    // allocates maxDepth records per emitted path; keeping the path index in
+    // the record offset makes these deposits independent and KD-treeable.
+    unsigned int rng = pathHash(index ^ (iteration * 0x51ed270bu));
     CudaVec3 point, normal, emission; float pdfArea;
     if (!sampleEmitter(scene.triangles, scene.spheres, scene.primitives, scene.primitiveCount,
                        scene.materials, scene.totalEmitterArea, rng, point, normal, emission, pdfArea))
-    { photons[index] = result; return; }
+    { return; }
     const CudaVec3 direction = pathCosineSample(normal, rng);
-    const float cosLight = fmaxf(0.0f, cudaDot(normal, direction));
     // Store the contribution of one sampled photon before the sample-count
     // average.  The average over all photons emitted so far is applied once
     // by sppmResolveKernel using the cumulative photon count.  Dividing here
@@ -539,7 +541,7 @@ __global__ void sppmPhotonKernel(uint32_t count, uint32_t iteration, uint32_t ma
     // `count`, which quantizes the framebuffer to black for normal images.
     // For cosine hemisphere sampling pOmega=cosine/pi, so the sampled cosine
     // cancels and the per-photon power is Le*pi/pA.
-    result.power = emission * (3.14159265f / fmaxf(1e-7f, pdfArea));
+    const CudaVec3 pathPower = emission * (3.14159265f / fmaxf(1e-7f, pdfArea));
     CudaRay ray{point + normal * 1e-3f, direction, {}, 1e-3f, 1e30f};
     CudaVec3 beta{1,1,1};
     for (uint32_t depth = 0; depth < maxDepth; ++depth)
@@ -551,13 +553,20 @@ __global__ void sppmPhotonKernel(uint32_t count, uint32_t iteration, uint32_t ma
         if (cudaLength2(material.emission) > 1e-12f) break;
         CudaVec3 n = hit.normal;
         if (cudaDot(n, ray.direction) > 0) n = n * -1.0f;
-        result.position = hit.position;
-        result.direction = ray.direction;
-        result.power = result.power * beta;
-        result.valid = 1;
-        // Deposit at the first diffuse vertex.  A purely specular material is
-        // a continuation vertex, so its code must remain reachable.
-        if (material.type == 0u || cudaLength2(material.diffuse) > 1e-12f) break;
+        const bool diffuseVertex = material.type == 0u ||
+            cudaLength2(material.diffuse) > 1e-12f;
+        if (diffuseVertex)
+        {
+            // Record every diffuse vertex, not only the last hit on the path.
+            // This is the photon-pass counterpart of gathering at a camera
+            // visible point: indirect illumination reaches a point through
+            // later bounces even when the camera sees its back side.
+            Photon &result = photons[index * maxDepth + depth];
+            result.position = hit.position;
+            result.direction = ray.direction;
+            result.power = pathPower * beta;
+            result.valid = 1;
+        }
         float pdf = 0; const CudaVec3 wi = sampleBsdf(material, ray.direction, n, rng, pdf);
         const float cosine = fmaxf(0.0f, cudaDot(n, wi));
         if (pdf <= 1e-7f || cosine <= 0) break;
@@ -566,7 +575,6 @@ __global__ void sppmPhotonKernel(uint32_t count, uint32_t iteration, uint32_t ma
         beta = beta * evaluateBsdf(material, ray.direction, wi, n) * (cosine / (pdf * survival));
         ray = {hit.position + n * 1e-3f, wi, {}, 1e-3f, 1e30f};
     }
-    photons[index] = result;
 }
 
 __global__ void sppmGatherKernel(SPPMPixel *points, uint32_t count,
@@ -610,11 +618,13 @@ void launchCudaSppmPhotons(uint32_t count, uint32_t iteration, uint32_t depth, f
                            CudaSceneView scene, std::vector<Photon> &photons)
 {
     Photon *device = nullptr; photons.clear();
-    if (!count) return;
-    cudaMalloc(reinterpret_cast<void **>(&device), count * sizeof(Photon));
+    if (!count || !depth) return;
+    const size_t recordCount = static_cast<size_t>(count) * depth;
+    cudaMalloc(reinterpret_cast<void **>(&device), recordCount * sizeof(Photon));
+    cudaMemset(device, 0, recordCount * sizeof(Photon));
     sppmPhotonKernel<<<(count+127)/128,128>>>(count,iteration,depth,roulette,scene,device);
-    cudaDeviceSynchronize(); std::vector<Photon> all(count);
-    cudaMemcpy(all.data(), device, count*sizeof(Photon), cudaMemcpyDeviceToHost); cudaFree(device);
+    cudaDeviceSynchronize(); std::vector<Photon> all(recordCount);
+    cudaMemcpy(all.data(), device, recordCount*sizeof(Photon), cudaMemcpyDeviceToHost); cudaFree(device);
     for (const Photon &p : all) if (p.valid) photons.push_back(p);
 }
 
