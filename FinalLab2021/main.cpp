@@ -16,21 +16,21 @@ int main(int argc, char **argv)
 {
 
     // Change the definition here to change resolution
-    Scene scene(784, 784);
-    int spp = 16;
-    if (argc == 2)
-
-    {
-        spp = atoi(argv[1]);
-    }
+    // Usage: RayTracing [spp] [width] [height] [maxDepth]
+    //                     [diffuse|microfacet] [output.ppm]
+    const int spp = argc > 1 ? std::max(1, atoi(argv[1])) : 16;
+    const int width = argc > 2 ? std::max(1, atoi(argv[2])) : 784;
+    const int height = argc > 3 ? std::max(1, atoi(argv[3])) : width;
+    const int maxDepth = argc > 4 ? std::max(1, atoi(argv[4])) : 8;
+    Scene scene(width, height);
+    scene.maxDepth = maxDepth;
     MaterialType type = DIFFUSE;
     std::string method = "diffuse";
-    if (argc == 3)
+    if (argc > 5)
     {
-        spp = atoi(argv[1]);
-        if (strcmp(argv[2], "diffuse") == 0)
+        if (strcmp(argv[5], "diffuse") == 0)
             type = DIFFUSE;
-        else if (strcmp(argv[2], "microfacet") == 0)
+        else if (strcmp(argv[5], "microfacet") == 0)
         {
             type = MICROFACET;
             method = "microfacet";
@@ -42,6 +42,8 @@ int main(int argc, char **argv)
         }
     }
 
+    const std::string output = argc > 6 ? argv[6] : std::string();
+    const auto totalStart = std::chrono::steady_clock::now();
     Material *red = new Material(type, Vector3f(0.0f));
     red->Kd = Vector3f(0.63f, 0.065f, 0.05f);
     Material *green = new Material(type, Vector3f(0.0f));
@@ -78,17 +80,20 @@ int main(int argc, char **argv)
     scene.Add(&sphere);
 
     scene.buildBVH();
+    const auto setupEnd = std::chrono::steady_clock::now();
 
     Renderer r;
 
-    auto start = std::chrono::system_clock::now();
-    r.Render(scene, spp, method);
-    auto stop = std::chrono::system_clock::now();
+    const RenderStats stats = r.Render(scene, spp, method, output);
+    const auto totalEnd = std::chrono::steady_clock::now();
+    const double setupMs = std::chrono::duration<double, std::milli>(setupEnd - totalStart).count();
+    const double renderMs = stats.renderMs;
+    const double totalMs = std::chrono::duration<double, std::milli>(totalEnd - totalStart).count();
 
     std::cout << "Render complete: \n";
-    std::cout << "Time taken: " << std::chrono::duration_cast<std::chrono::hours>(stop - start).count() << " hours\n";
-    std::cout << "          : " << std::chrono::duration_cast<std::chrono::minutes>(stop - start).count() << " minutes\n";
-    std::cout << "          : " << std::chrono::duration_cast<std::chrono::seconds>(stop - start).count() << " seconds\n";
+    std::cout << "BENCHMARK cpu scene_setup_ms=" << setupMs
+              << " render_ms=" << renderMs << " output_ms=" << stats.outputMs
+              << " total_ms=" << totalMs << "\n";
 
     return 0;
 }

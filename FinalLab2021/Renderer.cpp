@@ -13,8 +13,10 @@ inline float deg2rad(const float &deg) { return deg * M_PI / 180.0; }
 // exactly on the wall and sporadically self-intersect, producing black dots.
 const float EPSILON = 1e-3f;
 
-void Renderer::Render(const Scene &scene, const int spp, const std::string &method)
+RenderStats Renderer::Render(const Scene &scene, const int spp, const std::string &method,
+                             const std::string &requestedOutput)
 {
+    const auto renderStart = std::chrono::steady_clock::now();
     std::vector<Vector3f> framebuffer(scene.width * scene.height);
     const float scale = tan(deg2rad(scene.fov * 0.5));
     const float imageAspectRatio = scene.width / static_cast<float>(scene.height);
@@ -68,13 +70,15 @@ void Renderer::Render(const Scene &scene, const int spp, const std::string &meth
         worker.join();
     UpdateProgress(1.f);
 
-    const std::string outputName =
-        "render-" + std::to_string(spp) + "-" + method + ".ppm";
+    const std::string outputName = requestedOutput.empty()
+        ? "render-" + std::to_string(spp) + "-" + method + ".ppm"
+        : requestedOutput;
+    const auto outputStart = std::chrono::steady_clock::now();
     FILE *fp = fopen(outputName.c_str(), "wb");
     if (fp == nullptr)
     {
         std::cerr << "Failed to open output file: " << outputName << "\n";
-        return;
+        return {std::chrono::duration<double, std::milli>(outputStart - renderStart).count(), 0.0};
     }
     (void)fprintf(fp, "P6\n%d %d\n255\n", scene.width, scene.height);
     for (auto i = 0; i < scene.height * scene.width; ++i)
@@ -86,4 +90,7 @@ void Renderer::Render(const Scene &scene, const int spp, const std::string &meth
         fwrite(color, 1, 3, fp);
     }
     fclose(fp);
+    const auto outputEnd = std::chrono::steady_clock::now();
+    return {std::chrono::duration<double, std::milli>(outputStart - renderStart).count(),
+            std::chrono::duration<double, std::milli>(outputEnd - outputStart).count()};
 }

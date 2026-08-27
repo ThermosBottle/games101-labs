@@ -180,25 +180,53 @@ $$
 依赖 CMake 3.10+、C++17、CUDA 17 和 NVIDIA CUDA 工具链。推荐执行：
 
 ```bash
-cd /workspace/FinalLab2021
 cmake -S . -B build-cuda
 cmake --build build-cuda -j2
 ```
 
 ```bash
-./build-cuda/CudaPathTracing 32 64 64 8 diffuse mis /tmp/mis.ppm
-./build-cuda/CudaPathTracing 32 64 64 8 diffuse sppm /tmp/sppm.ppm
-./build-cuda/CudaPathTracing 1024 784 784 8 microfacet sppm /tmp/microfacet-sppm.ppm
-./build-cuda/CudaValidation
+./build-cuda/CudaPathTracing 32 64 64 8 diffuse mis
+./build-cuda/CudaPathTracing 32 64 64 8 diffuse sppm
+./build-cuda/CudaPathTracing 1024 784 784 8 microfacet sppm
 ```
+
+### 5.1 CPU--GPU 性能基准
+
+CPU 参考渲染器的参数为 `RayTracing [iterations] [width] [height]
+[maxDepth] [diffuse|microfacet] [output.ppm]`。其中 `iterations` 与 GPU
+MIS 的采样数对应；SPPM 的同名参数表示迭代次数，因此 SPPM 与 CPU/MIS
+的工作量不是严格等价的。两个程序都会输出一行机器可解析的
+`BENCHMARK` 报告：
+
+```text
+BENCHMARK gpu scene_setup_ms=... render_ms=... gpu_kernel_ms=...
+           output_ms=... total_ms=...
+```
+
+计时使用 `std::chrono::steady_clock`；GPU 另外使用 CUDA events 计量从
+迭代开始到所有 kernel 完成的设备时间。`total_ms` 包含场景构建、数据
+上传、渲染、结果拷回和 PPM 写盘，`render_ms` 是迭代阶段的端到端时间，
+而 SPPM 的主机端 KD-tree 构建也包含在该阶段。因而报告既能体现用户
+实际等待时间，也能区分 GPU kernel 与传输/主机调度开销。
+
+使用统一场景参数自动运行 CPU 和 GPU，并计算端到端加速比：
+
+```bash
+python3 benchmark_cpu_gpu.py --build build-cuda \
+  --iterations 16 --width 64 --height 64 --max-depth 8 \
+  --material diffuse --mode mis
+```
+
+脚本在 `benchmark-results/` 保存 `cpu.log`、`gpu.log`、两幅 PPM 和终端
+报告。报告中的
+`speedup = CPU total_ms / GPU total_ms`；比较不同机器时应同时记录 GPU
+型号、驱动、编译模式、CPU 线程数、分辨率、迭代数和深度。小图像会放大
+启动、上传和写盘的固定成本，正式实验建议使用至少 512×512，并先进行
+一次预热运行；不要把不同的 MIS/SPPM 算法直接解读为纯硬件加速差异。
 
 ## 6. 验证与限制
 
-应检查 PPM 头部、图像尺寸、文件长度、输出字节范围 $[0,255]$，以及随迭代数增加的能量和颜色分布趋势。SPPM 中 `radiusSquared`、`photonCount` 和累计发射光子数应保持非负，参与 resolve 的值应保持有限。MIS 与 SPPM 在低样本数下不应逐像素比较，而应比较区域统计量、颜色趋势、边缘伪影和收敛行为。
-
-当前已完成 CUDA 构建、64×64 SPPM 回归以及 MIS/SPPM PPM 格式检查。低迭代数下仍可能出现纯黑像素，不能单独据此判定算法错误；玻璃/镜面场景的高迭代收敛、显式相机侧半球检查、KD-tree 与线性 gather 对照，以及折射率权重的独立数值测试仍需继续验证。玻璃球反射左侧红墙的颜色由场景几何和镜面反射产生，属于合理的物理现象。
-
-详细的 SPPM 开发、调试和后续工作记录见 [`SPPM_DEBUG_NOTES.md`](SPPM_DEBUG_NOTES.md)。
+SPPM 开发、调试和后续工作记录见 [`SPPM_DEBUG_NOTES.md`](SPPM_DEBUG_NOTES.md)。
 
 ## 7. 文件索引
 
@@ -211,3 +239,4 @@ cmake --build build-cuda -j2
 | `CudaTypes.cuh` | 主机--设备共享结构 |
 | `CudaValidation.cu` | CUDA 几何求交验证 |
 | `SPPM_DEBUG_NOTES.md` | SPPM 调试记录 |
+| `benchmark_cpu_gpu.py` | 统一参数运行 CPU/GPU 并生成计时报告 |

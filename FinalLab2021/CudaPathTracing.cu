@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 #include <filesystem>
+#include <chrono>
 
 // global.hpp declares this symbol for the CPU geometry helpers included by
 // the scene-loading path.  The CUDA renderer does not link Renderer.cpp, so it
@@ -63,6 +64,7 @@ int main(int argc, char **argv)
 
     try
     {
+        const auto totalStart = std::chrono::steady_clock::now();
         Scene scene(width, height);
         Material *red = new Material(materialType, Vector3f(0.0f));
         red->Kd = Vector3f(0.63f, 0.065f, 0.05f);
@@ -109,6 +111,7 @@ int main(int argc, char **argv)
 
         CudaScene cudaScene;
         cudaScene.upload(scene);
+        const auto setupEnd = std::chrono::steady_clock::now();
         const size_t pixelCount = static_cast<size_t>(width) * height;
         CudaVec3 *deviceFramebuffer = nullptr;
         checkCuda(cudaMalloc(reinterpret_cast<void **>(&deviceFramebuffer),
@@ -130,6 +133,12 @@ int main(int argc, char **argv)
                       "cudaMemset SPPM visible points");
         }
         uint32_t emittedPhotons = 0;
+        cudaEvent_t gpuStart = nullptr;
+        cudaEvent_t gpuEnd = nullptr;
+        checkCuda(cudaEventCreate(&gpuStart), "cudaEventCreate start");
+        checkCuda(cudaEventCreate(&gpuEnd), "cudaEventCreate end");
+        checkCuda(cudaEventRecord(gpuStart), "cudaEventRecord start");
+        const auto renderStart = std::chrono::steady_clock::now();
         for (int sample = 0; sample < iterations; ++sample)
         {
             if (renderMode == "mis")
@@ -159,6 +168,13 @@ int main(int argc, char **argv)
             if ((sample + 1) % std::max(1, iterations / 10) == 0 || sample + 1 == iterations)
                 std::cout << "CUDA " << renderMode << " iterations: " << sample + 1 << "/" << iterations << "\n";
         }
+        checkCuda(cudaEventRecord(gpuEnd), "cudaEventRecord end");
+        checkCuda(cudaEventSynchronize(gpuEnd), "cudaEventSynchronize end");
+        const auto renderEnd = std::chrono::steady_clock::now();
+        float gpuMs = 0.0f;
+        checkCuda(cudaEventElapsedTime(&gpuMs, gpuStart, gpuEnd), "cudaEventElapsedTime");
+        cudaEventDestroy(gpuStart);
+        cudaEventDestroy(gpuEnd);
 
         std::vector<CudaVec3> framebuffer(pixelCount);
         checkCuda(cudaMemcpy(framebuffer.data(), deviceFramebuffer,
@@ -180,6 +196,14 @@ int main(int argc, char **argv)
             std::fwrite(pixel, 1, 3, file);
         }
         std::fclose(file);
+        const auto totalEnd = std::chrono::steady_clock::now();
+        const double setupMs = std::chrono::duration<double, std::milli>(setupEnd - totalStart).count();
+        const double renderMs = std::chrono::duration<double, std::milli>(renderEnd - renderStart).count();
+        const double totalMs = std::chrono::duration<double, std::milli>(totalEnd - totalStart).count();
+        std::cout << "BENCHMARK gpu scene_setup_ms=" << setupMs
+                  << " render_ms=" << renderMs << " gpu_kernel_ms=" << gpuMs
+                  << " output_ms=" << (totalMs - setupMs - renderMs)
+                  << " total_ms=" << totalMs << "\n";
         std::cout << "CUDA render complete: " << output << "\n";
     }
     catch (const std::exception &error)

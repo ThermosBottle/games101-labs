@@ -70,8 +70,6 @@ R^2 > 0, \qquad N \geq 0, \qquad M \geq 0.
 
 ## 4. 开发顺序
 
-建议按以下顺序加入功能，避免多个变量同时变化：
-
 1. 先实现单次迭代的光子发射和记录。
 2. 用线性遍历替代 KD-tree，验证光子位置、方向和功率。
 3. 加入 KD-tree，并将 KD-tree 查询结果与线性遍历比较。
@@ -140,8 +138,6 @@ R^2 > 0, \qquad N \geq 0, \qquad M \geq 0.
 - 折射方向是否位于正确的表面半空间；
 - 透射权重是否产生非有限值。
 
-不要通过无依据的 RGB 缩放来隐藏 eta 或方向错误。
-
 ### 5.4 Persistent visible point
 
 SPPM 的可见点状态跨迭代存在。某次相机路径失败时，不应自动清除之前已经有效的状态，否则可能发生：
@@ -185,67 +181,11 @@ s = H(p \oplus k i),
 5. `tau`、半径和 photon count 是否被错误更新；
 6. KD-tree 查询是否漏查半径边界内的节点。
 
-## 7. 验证方法
 
-### 7.1 编译
-
-在项目根目录执行：
-
-```bash
-cd /workspace/FinalLab2021/build-cuda
-make -j2 CudaPathTracing
-```
-
-### 7.2 小规模渲染
-
-使用低分辨率和少量迭代快速验证：
-
-```bash
-cd /workspace/FinalLab2021
-./build-cuda/CudaPathTracing 32 64 64 8 diffuse sppm /tmp/sppm-test.ppm
-./build-cuda/CudaPathTracing 32 64 64 8 diffuse mis /tmp/mis-test.ppm
-```
-
-### 7.3 输出检查
-
-至少检查：
-
-- PPM magic number 是否为 `P6`；
-- 图像尺寸和文件大小是否匹配；
-- 所有输出字节是否在 $[0,255]$；
-- 是否存在 NaN 或 Inf 在写出前被转换为异常值；
-- 纯黑像素比例是否随迭代数增加而改善；
-- 最大值、均值和 RGB 通道分布是否出现异常尖峰。
-
-PPM 文件不能直接暴露浮点 NaN，因此最好在 `byteColor` 之前对 framebuffer 做有限值检查。
-
-### 7.4 对照实验
-
-每次修改至少进行以下对照：
-
-| 实验 | 目的 |
-| --- | --- |
-| diffuse + MIS | 验证普通路径追踪基线 |
-| diffuse + SPPM | 验证光子 gather 和 progressive update |
-| glass/mirror + MIS | 验证 delta 路径 |
-| glass/mirror + SPPM | 验证 delta 相机路径与光子路径的交接 |
-| 增加迭代数 | 区分系统误差和采样方差 |
-
-SPPM 和 MIS 的单张低样本图像不应直接进行逐像素等价比较。应比较整体能量、颜色趋势、边缘伪影和随样本数变化的收敛行为。
-
-## 8. 当前实现中的结论
+## 7. 当前实现中的结论
 
 - 相机路径的固定 per-pixel seed 会冻结玻璃 Fresnel 分支，不适合作为跨迭代的 SPPM 相机采样策略。
 - 相机路径失败不应覆盖之前有效的 persistent visible point。
 - 玻璃球反射左侧红墙的颜色在物理上是合理现象。
 - SPPM 比 MIS 更早显示某些困难的间接颜色，不代表 MIS 必然错误；MIS 需要更多样本才能稳定采样 delta 反射后的漫反射路径。
 - 低迭代数下的黑像素比例不能单独作为正确性结论，还需要结合路径命中率、可见点有效率和有限值检查。
-
-## 9. 后续工作
-
-- 在 gather 中显式加入相机出射方向半球检查。
-- 对 `beta`、`newFlux`、`tau` 和 resolve 输入增加有限值与非负性诊断。
-- 增加线性 gather 与 KD-tree gather 的自动对照测试。
-- 记录每轮有效 visible point 数、有效光子数和平均搜索半径。
-- 对玻璃透射的 eta 权重建立单独的数值测试。
-- 使用高迭代数分别测试玻璃球、镜面和 MIS 回归场景。

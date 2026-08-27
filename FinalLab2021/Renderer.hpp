@@ -5,6 +5,12 @@
 #include <string>
 
 #pragma once
+struct RenderStats
+{
+    double renderMs = 0.0;
+    double outputMs = 0.0;
+};
+
 struct hit_payload
 {
     float tNear;
@@ -16,7 +22,8 @@ struct hit_payload
 class Renderer
 {
 public:
-    void Render(const Scene &scene, const int spp, const std::string &method);
+    RenderStats Render(const Scene &scene, const int spp, const std::string &method,
+                       const std::string &outputName = std::string());
 
 private:
 };
